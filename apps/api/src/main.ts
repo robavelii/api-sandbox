@@ -112,9 +112,13 @@ export async function createApp(
       throw new Problem(403, "Workspace owner access required.");
     return rows[0];
   };
-  async function sessionCookie(reply: any, userId: string) {
+  async function sessionCookie(
+    reply: any,
+    userId: string,
+    database: Pick<Pool, "query"> = pool,
+  ) {
     const secret = token();
-    await pool.query(
+    await database.query(
       "INSERT INTO auth_sessions VALUES($1,$2,now()+interval '7 days')",
       [digest(secret), userId],
     );
@@ -186,16 +190,78 @@ export async function createApp(
       password = required(req.body?.password);
     if (password.length > 128)
       throw new Problem(400, "Invalid password length.");
-    const { rows } = await pool.query("SELECT * FROM users WHERE email=$1", [
-      email,
-    ]);
-    const hash =
-      rows[0]?.password_hash || (await hashPassword("dummy-password"));
-    if (!(await verifyPassword(password, hash)) || !rows[0])
-      throw new Problem(401, "Invalid email or password.");
-    await sessionCookie(reply, rows[0].id);
+    await tx(async (client) => {
+      const { rows } = await client.query(
+        "SELECT * FROM users WHERE email=$1 FOR UPDATE",
+        [email],
+      );
+      const hash =
+        rows[0]?.password_hash || (await hashPassword("dummy-password"));
+      if (!(await verifyPassword(password, hash)) || !rows[0])
+        throw new Problem(401, "Invalid email or password.");
+      await sessionCookie(reply, rows[0].id, client);
+    });
     return { email };
   });
+  f.post("/api/auth/password", async (req: any, reply: any) => {
+    const user = await actor(req);
+    await authLimit(req);
+    const currentPassword = required(req.body?.currentPassword);
+    const newPassword = required(req.body?.newPassword);
+    if (
+      currentPassword.length > 128 ||
+      newPassword.length < 12 ||
+      newPassword.length > 128
+    )
+      throw new Problem(400, "Use a password of 12–128 characters.");
+    await tx(async (client) => {
+      const row = (
+        await client.query(
+          "SELECT password_hash FROM users WHERE id=$1 FOR UPDATE",
+          [user.id],
+        )
+      ).rows[0];
+      // Recheck after taking the user lock: another password change may have
+      // revoked this request's session while it waited.
+      const session = await client.query(
+        "SELECT 1 FROM auth_sessions WHERE token_hash=$1 AND user_id=$2 AND expires_at>now()",
+        [digest(req.cookies.st_session), user.id],
+      );
+      if (!session.rowCount) throw new Problem(401, "Session expired.");
+      if (!(await verifyPassword(currentPassword, row.password_hash)))
+        throw new Problem(401, "Current password is incorrect.");
+      await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [
+        await hashPassword(newPassword),
+        user.id,
+      ]);
+      await client.query("DELETE FROM auth_sessions WHERE user_id=$1", [
+        user.id,
+      ]);
+      await sessionCookie(reply, user.id, client);
+    });
+    return { ok: true };
+  });
+  for (const mode of ["logout-others", "logout-all"] as const) {
+    f.post(`/api/auth/${mode}`, async (req: any, reply: any) => {
+      const user = await actor(req);
+      await tx(async (client) => {
+        await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+          user.id,
+        ]);
+        const valid = await client.query(
+          "SELECT 1 FROM auth_sessions WHERE token_hash=$1 AND user_id=$2 AND expires_at>now()",
+          [digest(req.cookies.st_session), user.id],
+        );
+        if (!valid.rowCount) throw new Problem(401, "Session expired.");
+        await client.query(
+          "DELETE FROM auth_sessions WHERE user_id=$1 AND ($2::boolean OR token_hash<>$3)",
+          [user.id, mode === "logout-all", digest(req.cookies.st_session)],
+        );
+      });
+      if (mode === "logout-all") reply.clearCookie("st_session", { path: "/" });
+      return { ok: true };
+    });
+  }
   f.post("/api/auth/logout", async (req: any, reply: any) => {
     if (req.cookies.st_session)
       await pool.query("DELETE FROM auth_sessions WHERE token_hash=$1", [
