@@ -81,13 +81,15 @@ export async function createApp(pool: Pool) {
     if (!rows[0]) throw new Problem(401, "Session expired.");
     return rows[0];
   }
-  const boxFor = async (req: any) => {
+  const boxFor = async (req: any, ownerOnly = false) => {
     const user = await actor(req);
     const { rows } = await pool.query(
       "SELECT * FROM sandboxes WHERE id=$1 AND organization_id=$2",
       [req.params.id, user.organization_id],
     );
     if (!rows[0]) throw new Problem(404, "Sandbox not found.");
+    if (ownerOnly && user.role !== "owner")
+      throw new Problem(403, "Workspace owner access required.");
     return rows[0];
   };
   async function sessionCookie(reply: any, userId: string) {
@@ -253,7 +255,7 @@ export async function createApp(pool: Pool) {
     };
   });
   f.post("/api/sandboxes/:id/approve", async (req: any) => {
-    await boxFor(req);
+    await boxFor(req, true);
     await tx(async (c) => {
       await c.query("UPDATE sandboxes SET approved=true WHERE id=$1", [
         req.params.id,
@@ -283,31 +285,37 @@ export async function createApp(pool: Pool) {
         "Use a session name of 1–40 lowercase letters, numbers, or hyphens.",
       );
     const id = randomUUID();
-    await tx(async (c) => {
-      await c.query("SELECT id FROM sandboxes WHERE id=$1 FOR UPDATE", [
-        req.params.id,
-      ]);
-      if (
-        Number(
-          (
-            await c.query(
-              "SELECT count(*) FROM simulation_sessions WHERE sandbox_id=$1",
-              [req.params.id],
-            )
-          ).rows[0].count,
-        ) >= 10
-      )
-        throw new Problem(429, "Session limit reached.");
-      await c.query(
-        "INSERT INTO simulation_sessions(id,sandbox_id,name,version_id) VALUES($1,$2,$3,$2)",
-        [id, req.params.id, name],
-      );
-    });
+    try {
+      await tx(async (c) => {
+        await c.query("SELECT id FROM sandboxes WHERE id=$1 FOR UPDATE", [
+          req.params.id,
+        ]);
+        if (
+          Number(
+            (
+              await c.query(
+                "SELECT count(*) FROM simulation_sessions WHERE sandbox_id=$1",
+                [req.params.id],
+              )
+            ).rows[0].count,
+          ) >= 10
+        )
+          throw new Problem(429, "Session limit reached.");
+        await c.query(
+          "INSERT INTO simulation_sessions(id,sandbox_id,name,version_id) VALUES($1,$2,$3,$2)",
+          [id, req.params.id, name],
+        );
+      });
+    } catch (error: any) {
+      if (error.code === "23505")
+        throw new Problem(409, "Session name already exists.");
+      throw error;
+    }
     reply.code(201);
     return { id, name };
   });
   f.post("/api/sandboxes/:id/key", async (req: any) => {
-    await boxFor(req);
+    await boxFor(req, true);
     const apiKey = token();
     await pool.query("UPDATE sandboxes SET api_key_hash=$1 WHERE id=$2", [
       digest(apiKey),
@@ -327,7 +335,7 @@ export async function createApp(pool: Pool) {
     return { ok: true };
   });
   f.post("/api/sandboxes/:id/sessions/:sid/reset", async (req: any) => {
-    await boxFor(req);
+    await boxFor(req, true);
     await tx(async (c) => {
       const found = await c.query(
         "SELECT id FROM simulation_sessions WHERE id=$1 AND sandbox_id=$2 FOR UPDATE",
@@ -410,7 +418,7 @@ export async function createApp(pool: Pool) {
     return { id, number, definition: value, approved_at: null };
   });
   f.post("/api/sandboxes/:id/versions/:vid/approve", async (req: any) => {
-    await boxFor(req);
+    await boxFor(req, true);
     const r = await pool.query(
       "UPDATE sandbox_versions SET approved_at=coalesce(approved_at,now()) WHERE id=$1 AND sandbox_id=$2 RETURNING id",
       [req.params.vid, req.params.id],
@@ -419,7 +427,7 @@ export async function createApp(pool: Pool) {
     return { ok: true };
   });
   f.post("/api/sandboxes/:id/sessions/:sid/configure", async (req: any) => {
-    await boxFor(req);
+    await boxFor(req, true);
     const vid = required(req.body?.versionId);
     await tx(async (c) => {
       const row = (
@@ -494,9 +502,16 @@ export async function createApp(pool: Pool) {
             : error.statusCode && error.statusCode < 500
               ? error.statusCode
               : 500;
-    reply
-      .code(code)
-      .send({ error: code === 500 ? "Internal server error." : error.message });
+    reply.code(code).send({
+      error:
+        code === 500
+          ? "Internal server error."
+          : error.code === "23505"
+            ? "Resource already exists."
+            : error.code === "22P02"
+              ? "Invalid identifier."
+              : error.message,
+    });
   });
   await f.ready();
   return app;
