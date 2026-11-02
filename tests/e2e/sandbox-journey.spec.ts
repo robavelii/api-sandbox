@@ -39,6 +39,11 @@ test("a team can configure and replay an isolated integration journey", async ({
   await page.getByRole("button", { name: "Import contract →" }).click();
 
   await expect(page.getByText("Review needed")).toBeVisible();
+  await page.getByRole("button", { name: "Suggest retry scenarios" }).click();
+  await page.getByLabel("Suggested scenario").selectOption("0");
+  await expect(page.getByLabel("Typed scenario definition")).toHaveValue(
+    /Retry/,
+  );
   const endpoint = await page
     .getByRole("heading", { name: "Your sandbox endpoint" })
     .locator("..")

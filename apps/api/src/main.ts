@@ -20,6 +20,7 @@ import {
   definition,
 } from "../../../packages/engine/src/scenario.js";
 import { execute } from "./runtime.js";
+import { suggestedFailures } from "../../../packages/engine/src/proposals.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
 import {
@@ -473,6 +474,10 @@ export async function createApp(
       ).rows;
     });
 
+  f.get("/api/sandboxes/:id/proposals", async (req: any) => {
+    const box = await boxFor(req);
+    return suggestedFailures(box.contract);
+  });
   f.get("/api/sandboxes/:id/versions", async (req: any) => {
     await boxFor(req);
     return (

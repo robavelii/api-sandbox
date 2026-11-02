@@ -100,6 +100,31 @@ test(
     );
     assert.equal(created.status, 201);
     const { id, apiKey, sessionId } = created.data;
+    const proposals = await request(
+      `/api/sandboxes/${id}/proposals`,
+      "GET",
+      undefined,
+      auth,
+    );
+    assert.equal(proposals.status, 200);
+    assert.ok(proposals.data.length > 0);
+    assert.equal(proposals.data[0].requiresApproval, true);
+    assert.equal(proposals.data[0].provenance, "template");
+    assert.equal(
+      (await request(`/api/sandboxes/${id}/proposals`, "GET", undefined, other))
+        .status,
+      404,
+    );
+    assert.equal((await request(`/api/sandboxes/${id}/proposals`)).status, 401);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*) FROM sandbox_versions WHERE sandbox_id=$1",
+          [id],
+        )
+      ).rows[0].count,
+      "1",
+    );
     const p = `/sandbox/${id}`;
     assert.equal(
       (await request("/api/sandboxes", "GET", undefined, other)).data.length,
