@@ -199,6 +199,11 @@ test(
     for (const [name, path, body] of [
       ["approve contract", `/api/sandboxes/${boxId}/approve`, {}],
       ["rotate key", `/api/sandboxes/${boxId}/key`, {}],
+      [
+        "generate AI draft",
+        `/api/sandboxes/${boxId}/proposals`,
+        { prompt: "test" },
+      ],
       ["reset", `/api/sandboxes/${boxId}/sessions/${sessionId}/reset`, {}],
       [
         "approve version",

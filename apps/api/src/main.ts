@@ -20,7 +20,12 @@ import {
   definition,
 } from "../../../packages/engine/src/scenario.js";
 import { execute } from "./runtime.js";
-import { suggestedFailures } from "../../../packages/engine/src/proposals.js";
+import {
+  suggestedFailures,
+  proposeScenario,
+  type ProposalProvider,
+} from "../../../packages/engine/src/proposals.js";
+import { openAIProposalProvider } from "./proposal-provider.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
 import {
@@ -44,8 +49,13 @@ const required = (value: any, type = "string") => {
 };
 export async function createApp(
   pool: Pool,
-  options: { webhookResolver?: Resolver; webhookEncryptionKey?: string } = {},
+  options: {
+    webhookResolver?: Resolver;
+    webhookEncryptionKey?: string;
+    proposalProvider?: ProposalProvider;
+  } = {},
 ) {
+  const proposalProvider = options.proposalProvider || openAIProposalProvider();
   const app = await NestFactory.create<NestFastifyApplication>(
     ApiModule,
     new FastifyAdapter({ bodyLimit: 1_048_576, trustProxy: false }),
@@ -477,6 +487,33 @@ export async function createApp(
   f.get("/api/sandboxes/:id/proposals", async (req: any) => {
     const box = await boxFor(req);
     return suggestedFailures(box.contract);
+  });
+  f.post("/api/sandboxes/:id/proposals", async (req: any) => {
+    const box = await boxFor(req, true);
+    const prompt = required(req.body?.prompt);
+    if (!prompt.trim() || prompt.length > 2000)
+      throw new Problem(400, "Describe the scenario using 1–2000 characters.");
+    if (Buffer.byteLength(JSON.stringify(box.contract)) > 65536)
+      throw new Problem(400, "Contract exceeds the 64 KB proposal limit.");
+    if (!proposalProvider)
+      throw new Problem(
+        503,
+        "AI proposals are not configured. Template suggestions remain available.",
+      );
+    const reservation = await pool.query(
+      "INSERT INTO proposal_usage(organization_id,month,requests) VALUES($1,date_trunc('month',now() AT TIME ZONE 'UTC')::date,1) ON CONFLICT(organization_id,month) DO UPDATE SET requests=proposal_usage.requests+1 WHERE proposal_usage.requests<100 RETURNING requests",
+      [box.organization_id],
+    );
+    if (!reservation.rowCount)
+      throw new Problem(429, "Monthly AI proposal limit reached.");
+    try {
+      return await proposeScenario(box.contract, prompt, proposalProvider);
+    } catch {
+      throw new Problem(
+        502,
+        "AI proposal could not be generated. Try a template suggestion.",
+      );
+    }
   });
   f.get("/api/sandboxes/:id/versions", async (req: any) => {
     await boxFor(req);

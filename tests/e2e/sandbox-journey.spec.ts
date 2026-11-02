@@ -39,6 +39,13 @@ test("a team can configure and replay an isolated integration journey", async ({
   await page.getByRole("button", { name: "Import contract →" }).click();
 
   await expect(page.getByText("Review needed")).toBeVisible();
+  await page
+    .getByLabel("Describe a test scenario")
+    .fill("Retry payment requests");
+  await page.getByRole("button", { name: "Generate AI draft" }).click();
+  await expect(page.locator("#scenarios").getByRole("alert")).toContainText(
+    "not configured",
+  );
   await page.getByRole("button", { name: "Suggest retry scenarios" }).click();
   await page.getByLabel("Suggested scenario").selectOption("0");
   await expect(page.getByLabel("Typed scenario definition")).toHaveValue(

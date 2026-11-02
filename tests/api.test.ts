@@ -21,9 +21,20 @@ test(
     await pool.query(await readFile("migrations/001_foundation.sql", "utf8"));
     await pool.query(await readFile("migrations/002_scenarios.sql", "utf8"));
     await pool.query(await readFile("migrations/003_webhooks.sql", "utf8"));
+    await pool.query(
+      await readFile("migrations/004_proposal_usage.sql", "utf8"),
+    );
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
     const app = await createApp(pool, {
+      proposalProvider: async () => ({
+        version: 1,
+        name: "AI draft",
+        seed: "test",
+        clock: "2026-01-01T00:00:00.000Z",
+        idempotency: "replay",
+        rules: [],
+      }),
       webhookEncryptionKey: encryptionKey,
       webhookResolver: publicResolver,
     });
@@ -100,6 +111,62 @@ test(
     );
     assert.equal(created.status, 201);
     const { id, apiKey, sessionId } = created.data;
+    const aiDraft = await request(
+      `/api/sandboxes/${id}/proposals`,
+      "POST",
+      { prompt: "Retry payments" },
+      auth,
+    );
+    assert.equal(aiDraft.status, 200);
+    assert.equal(aiDraft.data.provenance, "ai-inferred");
+    assert.equal(aiDraft.data.requiresApproval, true);
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/proposals`,
+          "POST",
+          { prompt: "" },
+          auth,
+        )
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/proposals`,
+          "POST",
+          { prompt: "test" },
+          other,
+        )
+      ).status,
+      404,
+    );
+    await pool.query(
+      "UPDATE proposal_usage SET requests=99 WHERE organization_id=$1",
+      [first.data.organization_id],
+    );
+    const competing = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        request(
+          `/api/sandboxes/${id}/proposals`,
+          "POST",
+          { prompt: "test" },
+          auth,
+        ),
+      ),
+    );
+    assert.equal(competing.filter((r) => r.status === 200).length, 1);
+    assert.equal(competing.filter((r) => r.status === 429).length, 3);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT requests FROM proposal_usage WHERE organization_id=$1",
+          [first.data.organization_id],
+        )
+      ).rows[0].requests,
+      100,
+    );
     const proposals = await request(
       `/api/sandboxes/${id}/proposals`,
       "GET",
