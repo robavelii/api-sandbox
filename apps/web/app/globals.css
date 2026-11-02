@@ -893,3 +893,30 @@ button:disabled {
   opacity: 0.5;
   cursor: wait;
 }
+
+.scenario-editor {
+  margin-top: 16px;
+}
+.scenario-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+  font-size: 12px;
+}
+.scenario-editor > p {
+  line-height: 1.6;
+}
+.scenario-editor textarea {
+  height: 260px;
+  margin-top: 8px;
+}
+.editor-label {
+  font-size: 11px;
+  color: #789380;
+}
+.scenario-editor .editor-error {
+  color: #b35f49;
+  overflow-wrap: anywhere;
+}

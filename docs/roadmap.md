@@ -10,7 +10,7 @@ Next.js, NestJS/Fastify, shared compiler, PostgreSQL migrations, cookie accounts
 
 ## Subsequent feature PRs, in order
 
-1. **feat/scenario-engine**: versioned typed rules, approved operation mappings/custom actions, deterministic schema-based generation, controlled clocks, immutable configuration versions, idempotency policies, and before/after-mutation failure semantics. Test replay, malformed rules, and concurrency.
+1. **feat/scenario-engine**: implemented in PR 4 with versioned typed rules, approved custom transitions, bounded deterministic schema generation, controlled clocks, immutable configuration versions, idempotency policies, and before/after-mutation failure semantics. PostgreSQL tests cover replay, malformed rules, reset, version isolation, and concurrency.
 2. **feat/durable-webhooks**: transactional outbox and isolated worker, delayed transitions, signed deliveries, bounded retries/replay, egress isolation with SSRF protections and DNS/redirect handling. Test worker crashes and duplicate delivery behavior.
 3. **feat/ai-scenario-proposals**: structured generation, deterministic validation and one repair pass, provenance evidence, explicit approval, provider configuration, usage budgets, and operation without AI. No runtime model calls or arbitrary generated code.
 4. **feat/organization-access**: verified email and recovery, invitations/roles, session management, platform API keys, retention jobs, audit events, and distributed abuse protection. Add cross-tenant tests for every new endpoint.

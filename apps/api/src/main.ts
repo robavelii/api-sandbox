@@ -12,12 +12,14 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   parseContract,
-  match,
-  validate,
   scenarios,
-  deterministicId,
   type Contract,
 } from "../../../packages/engine/src/index.js";
+import {
+  defaultDefinition,
+  definition,
+} from "../../../packages/engine/src/scenario.js";
+import { execute } from "./runtime.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 @Module({})
 class ApiModule {}
@@ -232,7 +234,11 @@ export async function createApp(pool: Pool) {
         [id, u.organization_id, contract.title, contract, digest(key)],
       );
       await c.query(
-        "INSERT INTO simulation_sessions(id,sandbox_id,name) VALUES($1,$2,'default')",
+        "INSERT INTO sandbox_versions(id,sandbox_id,number,definition) VALUES($1,$1,1,$2)",
+        [id, defaultDefinition()],
+      );
+      await c.query(
+        "INSERT INTO simulation_sessions(id,sandbox_id,name,version_id) VALUES($1,$2,'default',$2)",
         [sid, id],
       );
     });
@@ -248,16 +254,22 @@ export async function createApp(pool: Pool) {
   });
   f.post("/api/sandboxes/:id/approve", async (req: any) => {
     await boxFor(req);
-    await pool.query("UPDATE sandboxes SET approved=true WHERE id=$1", [
-      req.params.id,
-    ]);
+    await tx(async (c) => {
+      await c.query("UPDATE sandboxes SET approved=true WHERE id=$1", [
+        req.params.id,
+      ]);
+      await c.query(
+        "UPDATE sandbox_versions SET approved_at=now() WHERE sandbox_id=$1 AND number=1 AND approved_at IS NULL",
+        [req.params.id],
+      );
+    });
     return { ok: true };
   });
   f.get("/api/sandboxes/:id/sessions", async (req: any) => {
     await boxFor(req);
     return (
       await pool.query(
-        "SELECT id,name,scenario,generation FROM simulation_sessions WHERE sandbox_id=$1 ORDER BY name",
+        "SELECT id,name,scenario,generation,version_id,clock FROM simulation_sessions WHERE sandbox_id=$1 ORDER BY name",
         [req.params.id],
       )
     ).rows;
@@ -287,7 +299,7 @@ export async function createApp(pool: Pool) {
       )
         throw new Problem(429, "Session limit reached.");
       await c.query(
-        "INSERT INTO simulation_sessions(id,sandbox_id,name) VALUES($1,$2,$3)",
+        "INSERT INTO simulation_sessions(id,sandbox_id,name,version_id) VALUES($1,$2,$3,$2)",
         [id, req.params.id, name],
       );
     });
@@ -325,11 +337,14 @@ export async function createApp(pool: Pool) {
       await c.query("DELETE FROM resources WHERE session_id=$1", [
         req.params.sid,
       ]);
+      await c.query("DELETE FROM idempotent_results WHERE session_id=$1", [
+        req.params.sid,
+      ]);
       await c.query("DELETE FROM request_logs WHERE session_id=$1", [
         req.params.sid,
       ]);
       await c.query(
-        "UPDATE simulation_sessions SET counter=0,generation=generation+1 WHERE id=$1",
+        "UPDATE simulation_sessions SET counter=0,generation=generation+1,rule_counts='{}',clock=(SELECT (definition->>'clock')::timestamptz FROM sandbox_versions WHERE id=version_id) WHERE id=$1",
         [req.params.sid],
       );
     });
@@ -346,12 +361,107 @@ export async function createApp(pool: Pool) {
       return (
         await pool.query(
           view === "logs"
-            ? "SELECT method,path,status,detail,created_at FROM request_logs WHERE session_id=$1 ORDER BY id DESC LIMIT 100"
+            ? "SELECT method,path,status,detail,created_at,version_id,simulated_at FROM request_logs WHERE session_id=$1 ORDER BY id DESC LIMIT 100"
             : "SELECT kind,id,data FROM resources WHERE session_id=$1 ORDER BY kind,id LIMIT 1000",
           [req.params.sid],
         )
       ).rows;
     });
+
+  f.get("/api/sandboxes/:id/versions", async (req: any) => {
+    await boxFor(req);
+    return (
+      await pool.query(
+        "SELECT id,number,definition,approved_at,created_at FROM sandbox_versions WHERE sandbox_id=$1 ORDER BY number DESC",
+        [req.params.id],
+      )
+    ).rows;
+  });
+  f.post("/api/sandboxes/:id/versions", async (req: any, reply: any) => {
+    const box = await boxFor(req);
+    let value;
+    try {
+      value = definition(req.body, box.contract);
+    } catch (e: any) {
+      throw new Problem(400, e.message);
+    }
+    const id = randomUUID();
+    const number = await tx(async (c) => {
+      await c.query("SELECT id FROM sandboxes WHERE id=$1 FOR UPDATE", [
+        box.id,
+      ]);
+      const n =
+        Number(
+          (
+            await c.query(
+              "SELECT max(number) AS n FROM sandbox_versions WHERE sandbox_id=$1",
+              [box.id],
+            )
+          ).rows[0].n,
+        ) + 1;
+      if (n > 100) throw new Problem(429, "Scenario version limit reached.");
+      await c.query(
+        "INSERT INTO sandbox_versions(id,sandbox_id,number,definition) VALUES($1,$2,$3,$4)",
+        [id, box.id, n, value],
+      );
+      return n;
+    });
+    reply.code(201);
+    return { id, number, definition: value, approved_at: null };
+  });
+  f.post("/api/sandboxes/:id/versions/:vid/approve", async (req: any) => {
+    await boxFor(req);
+    const r = await pool.query(
+      "UPDATE sandbox_versions SET approved_at=coalesce(approved_at,now()) WHERE id=$1 AND sandbox_id=$2 RETURNING id",
+      [req.params.vid, req.params.id],
+    );
+    if (!r.rowCount) throw new Problem(404, "Version not found.");
+    return { ok: true };
+  });
+  f.post("/api/sandboxes/:id/sessions/:sid/configure", async (req: any) => {
+    await boxFor(req);
+    const vid = required(req.body?.versionId);
+    await tx(async (c) => {
+      const row = (
+        await c.query(
+          "SELECT id FROM simulation_sessions WHERE id=$1 AND sandbox_id=$2 FOR UPDATE",
+          [req.params.sid, req.params.id],
+        )
+      ).rows[0];
+      if (!row) throw new Problem(404, "Session not found.");
+      const version = (
+        await c.query(
+          "SELECT * FROM sandbox_versions WHERE id=$1 AND sandbox_id=$2 AND approved_at IS NOT NULL",
+          [vid, req.params.id],
+        )
+      ).rows[0];
+      if (!version)
+        throw new Problem(409, "Choose an approved version from this sandbox.");
+      await c.query("DELETE FROM resources WHERE session_id=$1", [row.id]);
+      await c.query("DELETE FROM request_logs WHERE session_id=$1", [row.id]);
+      await c.query("DELETE FROM idempotent_results WHERE session_id=$1", [
+        row.id,
+      ]);
+      await c.query(
+        "UPDATE simulation_sessions SET version_id=$1,counter=0,rule_counts='{}',clock=$2,generation=generation+1,scenario='success' WHERE id=$3",
+        [vid, version.definition.clock, row.id],
+      );
+    });
+    return { ok: true };
+  });
+  f.post("/api/sandboxes/:id/sessions/:sid/clock", async (req: any) => {
+    await boxFor(req);
+    const ms = req.body?.advanceMs;
+    if (!Number.isSafeInteger(ms) || ms < 0 || ms > 86400000)
+      throw new Problem(400, "Advance the clock by 0–86400000 milliseconds.");
+    const r = await pool.query(
+      "UPDATE simulation_sessions SET clock=clock+($1 * interval '1 millisecond') WHERE id=$2 AND sandbox_id=$3 RETURNING clock",
+      [ms, req.params.sid, req.params.id],
+    );
+    if (!r.rowCount) throw new Problem(404, "Session not found.");
+    return r.rows[0];
+  });
+
   f.all("/sandbox/:id/*", async (req: any, reply: any) => {
     const route = "/" + req.params["*"];
     const key = String(req.headers.authorization || "").replace(/^Bearer /, "");
@@ -367,150 +477,9 @@ export async function createApp(pool: Pool) {
         409,
         "Review and approve inferred behaviors before running this sandbox.",
       );
-    const result = await tx(async (c) => {
-      const session = (
-        await c.query(
-          "SELECT * FROM simulation_sessions WHERE sandbox_id=$1 AND name=$2 FOR UPDATE",
-          [sandbox.id, req.headers["x-spectwin-session"] || "default"],
-        )
-      ).rows[0];
-      if (!session) throw new Problem(404, "Session not found.");
-      const usage = (
-        await c.query(
-          "INSERT INTO monthly_usage VALUES($1,date_trunc('month',now())::date,1) ON CONFLICT(organization_id,month) DO UPDATE SET requests=monthly_usage.requests+1 RETURNING requests",
-          [sandbox.organization_id],
-        )
-      ).rows[0];
-      const limit = (
-        await c.query("SELECT request_limit FROM organizations WHERE id=$1", [
-          sandbox.organization_id,
-        ])
-      ).rows[0].request_limit;
-      const log = async (status: number, data: any, detail: string) => {
-        await c.query(
-          "INSERT INTO request_logs(session_id,method,path,status,detail) VALUES($1,$2,$3,$4,$5)",
-          [session.id, req.method, route.slice(0, 2048), status, detail],
-        );
-        return { status, data, delay: session.scenario === "delay" };
-      };
-      if (usage.requests > limit)
-        return log(
-          429,
-          { error: "Monthly request quota exceeded." },
-          "Platform quota",
-        );
-      const operation = match(sandbox.contract, req.method, route);
-      if (!operation)
-        return log(
-          404,
-          { error: "Operation is not declared." },
-          "Route not found",
-        );
-      if (session.scenario === "error")
-        return log(
-          500,
-          { error: "Simulated server error." },
-          "Injected before mutation",
-        );
-      if (session.scenario === "rate_limit")
-        return log(
-          429,
-          { error: "Simulated rate limit." },
-          "Injected before mutation",
-        );
-      if (operation.behavior === "unconfigured")
-        return log(
-          501,
-          { error: "Custom action is not configured." },
-          "Unsupported action",
-        );
-      if (operation.requestRequired && req.body === undefined)
-        return log(400, { error: "Request body is required." }, "Validation");
-      const invalid = validate(operation.request, req.body);
-      if (invalid) return log(400, { error: invalid }, "Request validation");
-      let value: any;
-      const rid = route.split("/")[2],
-        kind = operation.resource;
-      if (
-        ["create", "update", "replace"].includes(operation.behavior) &&
-        (typeof req.body !== "object" ||
-          req.body === null ||
-          Array.isArray(req.body))
-      )
-        return log(
-          400,
-          { error: "Stateful mutations require an object body." },
-          "Validation",
-        );
-      if (operation.behavior === "create")
-        value = { ...req.body, id: deterministicId(kind, session.counter + 1) };
-      else if (operation.behavior === "list")
-        value = (
-          await c.query(
-            "SELECT data FROM resources WHERE session_id=$1 AND kind=$2 ORDER BY id LIMIT 1000",
-            [session.id, kind],
-          )
-        ).rows.map((x) => x.data);
-      else {
-        const row = (
-          await c.query(
-            "SELECT data FROM resources WHERE session_id=$1 AND kind=$2 AND id=$3",
-            [session.id, kind, rid],
-          )
-        ).rows[0];
-        if (!row)
-          return log(404, { error: "Resource not found." }, "Missing resource");
-        value =
-          operation.behavior === "update"
-            ? { ...row.data, ...req.body, id: rid }
-            : operation.behavior === "replace"
-              ? { ...req.body, id: rid }
-              : row.data;
-      }
-      const responseValue = operation.status === 204 ? undefined : value;
-      const responseError =
-        operation.status === 204
-          ? null
-          : validate(operation.response, responseValue);
-      if (responseError)
-        return log(
-          422,
-          {
-            error:
-              "Persisted resource cannot satisfy the declared response schema. Adjust the contract or mapping.",
-            detail: responseError,
-          },
-          "Response validation prevented mutation",
-        );
-      if (operation.behavior === "create") {
-        await c.query("INSERT INTO resources VALUES($1,$2,$3,$4)", [
-          session.id,
-          kind,
-          value.id,
-          value,
-        ]);
-        await c.query(
-          "UPDATE simulation_sessions SET counter=counter+1 WHERE id=$1",
-          [session.id],
-        );
-      }
-      if (["update", "replace"].includes(operation.behavior))
-        await c.query(
-          "UPDATE resources SET data=$1 WHERE session_id=$2 AND kind=$3 AND id=$4",
-          [value, session.id, kind, rid],
-        );
-      if (operation.behavior === "delete")
-        await c.query(
-          "DELETE FROM resources WHERE session_id=$1 AND kind=$2 AND id=$3",
-          [session.id, kind, rid],
-        );
-      return log(
-        operation.status,
-        responseValue,
-        `Executed ${operation.behavior}`,
-      );
-    });
-    if (result.delay) await new Promise((resolve) => setTimeout(resolve, 1000));
+    const result = await tx((c) => execute(c, sandbox, req, route));
+    if (result.delay)
+      await new Promise((resolve) => setTimeout(resolve, result.delay));
     return reply.code(result.status).send(result.data);
   });
   await app.init();

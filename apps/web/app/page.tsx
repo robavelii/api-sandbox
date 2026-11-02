@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import ScenarioEditor from "./scenario-editor";
 type Box = {
   id: string;
   name: string;
@@ -20,6 +21,8 @@ type Session = {
   name: string;
   scenario: string;
   generation: number;
+  version_id: string;
+  clock: string;
 };
 async function api(path: string, data?: unknown) {
   const r = await fetch("/api" + path, {
@@ -188,6 +191,9 @@ export default function Home() {
         </a>
         <a className="nav" href="#operations">
           ⌘ &nbsp; API operations
+        </a>
+        <a className="nav" href="#scenarios">
+          ◈ &nbsp; Scenarios
         </a>
         <a className="nav" href="#activity">
           ☷ &nbsp; Request activity
@@ -445,6 +451,9 @@ export default function Home() {
                               `/sandboxes/${box.id}/sessions/${sid}/reset`,
                               {},
                             );
+                            setSessions(
+                              await api(`/sandboxes/${box.id}/sessions`),
+                            );
                             await activity();
                           }
                         })
@@ -473,6 +482,17 @@ export default function Home() {
                   </button>
                 )}
               </div>
+              <ScenarioEditor
+                boxId={box.id}
+                sid={sid}
+                versionId={session?.version_id || ""}
+                clock={session?.clock || ""}
+                operationIds={box.contract.operations.map((o) => o.id)}
+                onChange={async () => {
+                  setSessions(await api(`/sandboxes/${box.id}/sessions`));
+                  await activity();
+                }}
+              />
               <div className="grid lower">
                 <section className="panel" id="operations">
                   <div className="eyebrow muted">FROM YOUR CONTRACT</div>
@@ -514,7 +534,12 @@ export default function Home() {
                           <strong>
                             {l.method} {l.path}
                           </strong>
-                          <small>{l.detail}</small>
+                          <small>
+                            {l.detail}
+                            {l.simulated_at
+                              ? ` · ${new Date(l.simulated_at).toISOString()}`
+                              : ""}
+                          </small>
                         </div>
                         <span
                           className={
