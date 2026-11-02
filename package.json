@@ -21,6 +21,8 @@
     "test:integration": "node --import tsx --test tests/api.test.ts",
     "test:integration:coverage": "c8 --all --src apps/api/src --src packages/engine/src --reports-dir reports/integration-coverage --reporter=text-summary --reporter=lcov --check-coverage --lines=85 --statements=85 --functions=90 --branches=65 node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/integration-junit.xml tests/api.test.ts",
     "test:migrations": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/migrations-junit.xml tests/migrations.test.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report artifacts/playwright-report",
     "migrate": "node --import tsx scripts/migrate.ts",
     "ci:audit": "node --import tsx scripts/audit-dependencies.ts",
     "ci:validate": "node --import tsx scripts/validate-workflows.ts",
@@ -31,6 +33,7 @@
     "pg": "^8.16.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.5",
     "c8": "^10.1.3",
