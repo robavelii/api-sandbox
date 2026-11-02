@@ -6,6 +6,26 @@ type Version = {
   approved_at: string | null;
   definition: any;
 };
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+      )
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+function matchesSaved(source: string, version: Version | undefined): boolean {
+  if (!version) return false;
+  try {
+    return canonical(JSON.parse(source)) === canonical(version.definition);
+  } catch {
+    return false;
+  }
+}
 async function api(path: string, data?: unknown) {
   const r = await fetch("/api" + path, {
     method: data === undefined ? "GET" : "POST",
@@ -37,6 +57,7 @@ export default function ScenarioEditor({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const version = versions.find((v) => v.id === selected);
+  const savedDefinitionSelected = matchesSaved(source, version);
   async function load() {
     const rows = await api(`/sandboxes/${boxId}/versions`);
     setVersions(rows);
@@ -182,7 +203,7 @@ export default function ScenarioEditor({
             busy ||
             !version ||
             !!version.approved_at ||
-            source !== JSON.stringify(version.definition, null, 2)
+            !savedDefinitionSelected
           }
           className="button light"
           onClick={() =>
@@ -196,10 +217,7 @@ export default function ScenarioEditor({
         </button>
         <button
           disabled={
-            busy ||
-            !sid ||
-            !version?.approved_at ||
-            source !== JSON.stringify(version.definition, null, 2)
+            busy || !sid || !version?.approved_at || !savedDefinitionSelected
           }
           className="button light"
           onClick={() =>

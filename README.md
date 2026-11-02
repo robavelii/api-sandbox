@@ -68,6 +68,15 @@ npm test
 npm run build
 ```
 
+Browser integration tests require Chromium and a dedicated PostgreSQL database whose name ends in `_e2e`. The suite resets that database before running and refuses any other database name:
+
+```sh
+npx playwright install chromium
+E2E_DATABASE_URL=postgresql://spectwin:local-test-only@127.0.0.1:5432/spectwin_e2e npm run test:e2e
+```
+
+The browser suite starts the API and dashboard, completes registration and import through the UI, verifies the Next.js proxy and credentialed CORS policy, approves inferred behavior, sends runtime requests, verifies scenario replay and idempotency, inspects request activity, resets state, creates an isolated session, and confirms cross-organization access is denied. Traces, screenshots, HTML, JUnit, and server logs are written under `artifacts/`; traces and screenshots are retained only for failures.
+
 The integration suite is enabled by `TEST_DATABASE_URL`. It **drops and recreates the public schema** of that database; use a dedicated disposable database, never development or production data. CI provisions its own database and always runs the integration suite. Without that variable only engine and password tests run.
 
 ## Behavior and boundaries

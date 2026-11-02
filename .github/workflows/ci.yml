@@ -125,9 +125,46 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  browser:
+    name: Browser integration journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: spectwin
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: spectwin_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U spectwin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgresql://spectwin:test-only@localhost:5432/spectwin_e2e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: browser-integration-artifacts
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
   build:
     name: Production builds
-    needs: [quality, unit, integration, security]
+    needs: [quality, unit, integration, security, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
