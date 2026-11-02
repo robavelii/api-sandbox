@@ -1,0 +1,33 @@
+{
+  "name": "spectwin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:api": "npm run dev -w @spectwin/api",
+    "dev:web": "npm run dev -w @spectwin/web",
+    "build": "npm run build -w @spectwin/engine && npm run build -w @spectwin/api && npm run build -w @spectwin/web",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "migrate": "node --import tsx scripts/migrate.ts",
+    "format:check": "prettier --check .",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.5",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

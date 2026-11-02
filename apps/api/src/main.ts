@@ -1,0 +1,554 @@
+import "reflect-metadata";
+import { Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from "@nestjs/platform-fastify";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import { Pool, type PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import {
+  parseContract,
+  match,
+  validate,
+  scenarios,
+  deterministicId,
+  type Contract,
+} from "../../../packages/engine/src/index.js";
+import { hashPassword, verifyPassword, token, digest } from "./auth.js";
+@Module({})
+class ApiModule {}
+class Problem extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+const required = (value: any, type = "string") => {
+  if (typeof value !== type) throw new Problem(400, `Expected ${type}.`);
+  return value;
+};
+export async function createApp(pool: Pool) {
+  const app = await NestFactory.create<NestFastifyApplication>(
+    ApiModule,
+    new FastifyAdapter({ bodyLimit: 1_048_576, trustProxy: false }),
+    { logger: false },
+  );
+  const f = app.getHttpAdapter().getInstance();
+  const origin = process.env.WEB_ORIGIN || "http://localhost:3000";
+  await f.register(cookie);
+  await f.register(cors, { origin, credentials: true });
+
+  f.addHook("onRequest", async (req: any, reply: any) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("cache-control", "no-store");
+    if (
+      req.url.startsWith("/api/") &&
+      !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
+      req.headers.origin &&
+      req.headers.origin !== origin
+    )
+      throw new Problem(403, "Origin not allowed.");
+  });
+  async function tx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
+    const c = await pool.connect();
+    try {
+      await c.query("BEGIN");
+      const value = await fn(c);
+      await c.query("COMMIT");
+      return value;
+    } catch (e) {
+      await c.query("ROLLBACK");
+      throw e;
+    } finally {
+      c.release();
+    }
+  }
+  async function actor(req: any) {
+    const secret = req.cookies.st_session;
+    if (!secret) throw new Problem(401, "Sign in required.");
+    const { rows } = await pool.query(
+      "SELECT u.id,u.email,m.organization_id,m.role FROM auth_sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>now() ORDER BY m.organization_id LIMIT 1",
+      [digest(secret)],
+    );
+    if (!rows[0]) throw new Problem(401, "Session expired.");
+    return rows[0];
+  }
+  const boxFor = async (req: any) => {
+    const user = await actor(req);
+    const { rows } = await pool.query(
+      "SELECT * FROM sandboxes WHERE id=$1 AND organization_id=$2",
+      [req.params.id, user.organization_id],
+    );
+    if (!rows[0]) throw new Problem(404, "Sandbox not found.");
+    return rows[0];
+  };
+  async function sessionCookie(reply: any, userId: string) {
+    const secret = token();
+    await pool.query(
+      "INSERT INTO auth_sessions VALUES($1,$2,now()+interval '7 days')",
+      [digest(secret), userId],
+    );
+    reply.setCookie("st_session", secret, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 604800,
+    });
+  }
+  f.get("/health", async () => {
+    await pool.query("SELECT 1");
+    return { status: "ok" };
+  });
+  // DB-backed attempt limits work across API instances. Do not retain submitted credentials.
+  async function authLimit(req: any) {
+    const { rows } = await pool.query(
+      "INSERT INTO auth_attempts VALUES($1,1,now()) ON CONFLICT(address) DO UPDATE SET attempts=CASE WHEN auth_attempts.window_start<now()-interval '15 minutes' THEN 1 ELSE auth_attempts.attempts+1 END,window_start=CASE WHEN auth_attempts.window_start<now()-interval '15 minutes' THEN now() ELSE auth_attempts.window_start END RETURNING attempts",
+      [digest(req.ip)],
+    );
+    if (rows[0].attempts > 30)
+      throw new Problem(429, "Too many attempts. Try again later.");
+  }
+  f.post("/api/auth/register", async (req: any, reply: any) => {
+    await authLimit(req);
+    const email = required(req.body?.email).trim().toLowerCase(),
+      password = required(req.body?.password);
+    if (
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+      email.length > 254 ||
+      password.length < 12 ||
+      password.length > 128
+    )
+      throw new Problem(
+        400,
+        "Use a valid email and a password of 12–128 characters.",
+      );
+    const hash = await hashPassword(password),
+      uid = randomUUID(),
+      oid = randomUUID();
+    try {
+      await tx(async (c) => {
+        await c.query(
+          "INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)",
+          [uid, email, hash],
+        );
+        await c.query("INSERT INTO organizations(id,name) VALUES($1,$2)", [
+          oid,
+          "My workspace",
+        ]);
+        await c.query("INSERT INTO memberships VALUES($1,$2,'owner')", [
+          uid,
+          oid,
+        ]);
+      });
+    } catch (e: any) {
+      if (e.code === "23505")
+        throw new Problem(409, "Unable to register this email.");
+      throw e;
+    }
+    await sessionCookie(reply, uid);
+    reply.code(201);
+    return { id: uid, email, organization_id: oid };
+  });
+  f.post("/api/auth/login", async (req: any, reply: any) => {
+    await authLimit(req);
+    const email = required(req.body?.email).trim().toLowerCase(),
+      password = required(req.body?.password);
+    if (password.length > 128)
+      throw new Problem(400, "Invalid password length.");
+    const { rows } = await pool.query("SELECT * FROM users WHERE email=$1", [
+      email,
+    ]);
+    const hash =
+      rows[0]?.password_hash || (await hashPassword("dummy-password"));
+    if (!(await verifyPassword(password, hash)) || !rows[0])
+      throw new Problem(401, "Invalid email or password.");
+    await sessionCookie(reply, rows[0].id);
+    return { email };
+  });
+  f.post("/api/auth/logout", async (req: any, reply: any) => {
+    if (req.cookies.st_session)
+      await pool.query("DELETE FROM auth_sessions WHERE token_hash=$1", [
+        digest(req.cookies.st_session),
+      ]);
+    reply.clearCookie("st_session", { path: "/" });
+    return { ok: true };
+  });
+  f.get("/api/me", async (req: any) => actor(req));
+  f.get("/api/usage", async (req: any) => {
+    const u = await actor(req);
+    return (
+      await pool.query(
+        "SELECT o.request_limit,o.sandbox_limit,coalesce(m.requests,0) AS requests FROM organizations o LEFT JOIN monthly_usage m ON m.organization_id=o.id AND m.month=date_trunc('month',now())::date WHERE o.id=$1",
+        [u.organization_id],
+      )
+    ).rows[0];
+  });
+  f.get("/api/sandboxes", async (req: any) => {
+    const u = await actor(req);
+    return (
+      await pool.query(
+        "SELECT id,name,approved,created_at,contract FROM sandboxes WHERE organization_id=$1 ORDER BY created_at DESC",
+        [u.organization_id],
+      )
+    ).rows;
+  });
+  f.post("/api/sandboxes", async (req: any, reply: any) => {
+    const u = await actor(req);
+    let contract: Contract;
+    try {
+      contract = parseContract(required(req.body?.source));
+    } catch (e: any) {
+      throw new Problem(400, e.message);
+    }
+    const key = token(),
+      id = randomUUID(),
+      sid = randomUUID();
+    await tx(async (c) => {
+      const org = (
+        await c.query(
+          "SELECT sandbox_limit FROM organizations WHERE id=$1 FOR UPDATE",
+          [u.organization_id],
+        )
+      ).rows[0];
+      const count = Number(
+        (
+          await c.query(
+            "SELECT count(*) FROM sandboxes WHERE organization_id=$1",
+            [u.organization_id],
+          )
+        ).rows[0].count,
+      );
+      if (count >= org.sandbox_limit)
+        throw new Problem(429, "Sandbox limit reached.");
+      await c.query(
+        "INSERT INTO sandboxes(id,organization_id,name,contract,api_key_hash) VALUES($1,$2,$3,$4,$5)",
+        [id, u.organization_id, contract.title, contract, digest(key)],
+      );
+      await c.query(
+        "INSERT INTO simulation_sessions(id,sandbox_id,name) VALUES($1,$2,'default')",
+        [sid, id],
+      );
+    });
+    reply.code(201);
+    return {
+      id,
+      name: contract.title,
+      contract,
+      sessionId: sid,
+      apiKey: key,
+      approved: false,
+    };
+  });
+  f.post("/api/sandboxes/:id/approve", async (req: any) => {
+    await boxFor(req);
+    await pool.query("UPDATE sandboxes SET approved=true WHERE id=$1", [
+      req.params.id,
+    ]);
+    return { ok: true };
+  });
+  f.get("/api/sandboxes/:id/sessions", async (req: any) => {
+    await boxFor(req);
+    return (
+      await pool.query(
+        "SELECT id,name,scenario,generation FROM simulation_sessions WHERE sandbox_id=$1 ORDER BY name",
+        [req.params.id],
+      )
+    ).rows;
+  });
+  f.post("/api/sandboxes/:id/sessions", async (req: any, reply: any) => {
+    await boxFor(req);
+    const name = required(req.body?.name);
+    if (!/^[a-z0-9-]{1,40}$/.test(name))
+      throw new Problem(
+        400,
+        "Use a session name of 1–40 lowercase letters, numbers, or hyphens.",
+      );
+    const id = randomUUID();
+    await tx(async (c) => {
+      await c.query("SELECT id FROM sandboxes WHERE id=$1 FOR UPDATE", [
+        req.params.id,
+      ]);
+      if (
+        Number(
+          (
+            await c.query(
+              "SELECT count(*) FROM simulation_sessions WHERE sandbox_id=$1",
+              [req.params.id],
+            )
+          ).rows[0].count,
+        ) >= 10
+      )
+        throw new Problem(429, "Session limit reached.");
+      await c.query(
+        "INSERT INTO simulation_sessions(id,sandbox_id,name) VALUES($1,$2,$3)",
+        [id, req.params.id, name],
+      );
+    });
+    reply.code(201);
+    return { id, name };
+  });
+  f.post("/api/sandboxes/:id/key", async (req: any) => {
+    await boxFor(req);
+    const apiKey = token();
+    await pool.query("UPDATE sandboxes SET api_key_hash=$1 WHERE id=$2", [
+      digest(apiKey),
+      req.params.id,
+    ]);
+    return { apiKey };
+  });
+  f.post("/api/sandboxes/:id/sessions/:sid/scenario", async (req: any) => {
+    await boxFor(req);
+    if (!scenarios.includes(req.body?.scenario))
+      throw new Problem(400, "Unknown scenario.");
+    const result = await pool.query(
+      "UPDATE simulation_sessions SET scenario=$1 WHERE id=$2 AND sandbox_id=$3",
+      [req.body.scenario, req.params.sid, req.params.id],
+    );
+    if (!result.rowCount) throw new Problem(404, "Session not found.");
+    return { ok: true };
+  });
+  f.post("/api/sandboxes/:id/sessions/:sid/reset", async (req: any) => {
+    await boxFor(req);
+    await tx(async (c) => {
+      const found = await c.query(
+        "SELECT id FROM simulation_sessions WHERE id=$1 AND sandbox_id=$2 FOR UPDATE",
+        [req.params.sid, req.params.id],
+      );
+      if (!found.rowCount) throw new Problem(404, "Session not found.");
+      await c.query("DELETE FROM resources WHERE session_id=$1", [
+        req.params.sid,
+      ]);
+      await c.query("DELETE FROM request_logs WHERE session_id=$1", [
+        req.params.sid,
+      ]);
+      await c.query(
+        "UPDATE simulation_sessions SET counter=0,generation=generation+1 WHERE id=$1",
+        [req.params.sid],
+      );
+    });
+    return { ok: true };
+  });
+  for (const view of ["logs", "resources"])
+    f.get(`/api/sandboxes/:id/sessions/:sid/${view}`, async (req: any) => {
+      await boxFor(req);
+      const session = await pool.query(
+        "SELECT id FROM simulation_sessions WHERE id=$1 AND sandbox_id=$2",
+        [req.params.sid, req.params.id],
+      );
+      if (!session.rowCount) throw new Problem(404, "Session not found.");
+      return (
+        await pool.query(
+          view === "logs"
+            ? "SELECT method,path,status,detail,created_at FROM request_logs WHERE session_id=$1 ORDER BY id DESC LIMIT 100"
+            : "SELECT kind,id,data FROM resources WHERE session_id=$1 ORDER BY kind,id LIMIT 1000",
+          [req.params.sid],
+        )
+      ).rows;
+    });
+  f.all("/sandbox/:id/*", async (req: any, reply: any) => {
+    const route = "/" + req.params["*"];
+    const key = String(req.headers.authorization || "").replace(/^Bearer /, "");
+    const sandbox = (
+      await pool.query(
+        "SELECT * FROM sandboxes WHERE id=$1 AND api_key_hash=$2",
+        [req.params.id, digest(key)],
+      )
+    ).rows[0];
+    if (!sandbox) throw new Problem(401, "Invalid sandbox key.");
+    if (!sandbox.approved)
+      throw new Problem(
+        409,
+        "Review and approve inferred behaviors before running this sandbox.",
+      );
+    const result = await tx(async (c) => {
+      const session = (
+        await c.query(
+          "SELECT * FROM simulation_sessions WHERE sandbox_id=$1 AND name=$2 FOR UPDATE",
+          [sandbox.id, req.headers["x-spectwin-session"] || "default"],
+        )
+      ).rows[0];
+      if (!session) throw new Problem(404, "Session not found.");
+      const usage = (
+        await c.query(
+          "INSERT INTO monthly_usage VALUES($1,date_trunc('month',now())::date,1) ON CONFLICT(organization_id,month) DO UPDATE SET requests=monthly_usage.requests+1 RETURNING requests",
+          [sandbox.organization_id],
+        )
+      ).rows[0];
+      const limit = (
+        await c.query("SELECT request_limit FROM organizations WHERE id=$1", [
+          sandbox.organization_id,
+        ])
+      ).rows[0].request_limit;
+      const log = async (status: number, data: any, detail: string) => {
+        await c.query(
+          "INSERT INTO request_logs(session_id,method,path,status,detail) VALUES($1,$2,$3,$4,$5)",
+          [session.id, req.method, route.slice(0, 2048), status, detail],
+        );
+        return { status, data, delay: session.scenario === "delay" };
+      };
+      if (usage.requests > limit)
+        return log(
+          429,
+          { error: "Monthly request quota exceeded." },
+          "Platform quota",
+        );
+      const operation = match(sandbox.contract, req.method, route);
+      if (!operation)
+        return log(
+          404,
+          { error: "Operation is not declared." },
+          "Route not found",
+        );
+      if (session.scenario === "error")
+        return log(
+          500,
+          { error: "Simulated server error." },
+          "Injected before mutation",
+        );
+      if (session.scenario === "rate_limit")
+        return log(
+          429,
+          { error: "Simulated rate limit." },
+          "Injected before mutation",
+        );
+      if (operation.behavior === "unconfigured")
+        return log(
+          501,
+          { error: "Custom action is not configured." },
+          "Unsupported action",
+        );
+      if (operation.requestRequired && req.body === undefined)
+        return log(400, { error: "Request body is required." }, "Validation");
+      const invalid = validate(operation.request, req.body);
+      if (invalid) return log(400, { error: invalid }, "Request validation");
+      let value: any;
+      const rid = route.split("/")[2],
+        kind = operation.resource;
+      if (
+        ["create", "update", "replace"].includes(operation.behavior) &&
+        (typeof req.body !== "object" ||
+          req.body === null ||
+          Array.isArray(req.body))
+      )
+        return log(
+          400,
+          { error: "Stateful mutations require an object body." },
+          "Validation",
+        );
+      if (operation.behavior === "create")
+        value = { ...req.body, id: deterministicId(kind, session.counter + 1) };
+      else if (operation.behavior === "list")
+        value = (
+          await c.query(
+            "SELECT data FROM resources WHERE session_id=$1 AND kind=$2 ORDER BY id LIMIT 1000",
+            [session.id, kind],
+          )
+        ).rows.map((x) => x.data);
+      else {
+        const row = (
+          await c.query(
+            "SELECT data FROM resources WHERE session_id=$1 AND kind=$2 AND id=$3",
+            [session.id, kind, rid],
+          )
+        ).rows[0];
+        if (!row)
+          return log(404, { error: "Resource not found." }, "Missing resource");
+        value =
+          operation.behavior === "update"
+            ? { ...row.data, ...req.body, id: rid }
+            : operation.behavior === "replace"
+              ? { ...req.body, id: rid }
+              : row.data;
+      }
+      const responseValue = operation.status === 204 ? undefined : value;
+      const responseError =
+        operation.status === 204
+          ? null
+          : validate(operation.response, responseValue);
+      if (responseError)
+        return log(
+          422,
+          {
+            error:
+              "Persisted resource cannot satisfy the declared response schema. Adjust the contract or mapping.",
+            detail: responseError,
+          },
+          "Response validation prevented mutation",
+        );
+      if (operation.behavior === "create") {
+        await c.query("INSERT INTO resources VALUES($1,$2,$3,$4)", [
+          session.id,
+          kind,
+          value.id,
+          value,
+        ]);
+        await c.query(
+          "UPDATE simulation_sessions SET counter=counter+1 WHERE id=$1",
+          [session.id],
+        );
+      }
+      if (["update", "replace"].includes(operation.behavior))
+        await c.query(
+          "UPDATE resources SET data=$1 WHERE session_id=$2 AND kind=$3 AND id=$4",
+          [value, session.id, kind, rid],
+        );
+      if (operation.behavior === "delete")
+        await c.query(
+          "DELETE FROM resources WHERE session_id=$1 AND kind=$2 AND id=$3",
+          [session.id, kind, rid],
+        );
+      return log(
+        operation.status,
+        responseValue,
+        `Executed ${operation.behavior}`,
+      );
+    });
+    if (result.delay) await new Promise((resolve) => setTimeout(resolve, 1000));
+    return reply.code(result.status).send(result.data);
+  });
+  await app.init();
+  f.setErrorHandler((error: any, _req: any, reply: any) => {
+    const code =
+      error.code === "23505"
+        ? 409
+        : error.code === "22P02"
+          ? 400
+          : error instanceof Problem
+            ? error.status
+            : error.statusCode && error.statusCode < 500
+              ? error.statusCode
+              : 500;
+    reply
+      .code(code)
+      .send({ error: code === 500 ? "Internal server error." : error.message });
+  });
+  await f.ready();
+  return app;
+}
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  if (!process.env.DATABASE_URL)
+    throw new Error(
+      "DATABASE_URL is required. Run migrations before starting.",
+    );
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 10,
+  });
+  const app = await createApp(pool);
+  app.enableShutdownHooks();
+  await app.listen(
+    Number(process.env.PORT || 4000),
+    process.env.HOST || "127.0.0.1",
+  );
+  console.log("SpecTwin API ready");
+}
