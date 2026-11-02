@@ -1,0 +1,72 @@
+name: Runtime load and isolation
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "packages/engine/**"
+      - "migrations/**"
+      - "tests/load/**"
+      - "package*.json"
+      - ".github/workflows/runtime-load.yml"
+  schedule:
+    - cron: "27 2 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Load profile
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - nightly
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-load-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  load:
+    name: ${{ github.event_name == 'schedule' && 'nightly' || inputs.profile || 'smoke' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: spectwin
+          POSTGRES_PASSWORD: load-test-only
+          POSTGRES_DB: spectwin_load
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U spectwin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LOAD_TEST_DATABASE_URL: postgresql://spectwin:load-test-only@localhost:5432/spectwin_load
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Run PR smoke profile
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'smoke')
+        run: npm run test:load:smoke
+      - name: Run scheduled or selected nightly profile
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'nightly')
+        run: npm run test:load:nightly
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: runtime-load-${{ github.run_id }}
+          path: artifacts/load/*.json
+          if-no-files-found: warn
+          retention-days: 14
