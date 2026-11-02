@@ -1,0 +1,64 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Payments API",
+    "version": "1.0.0",
+    "description": "A sample payment integration for testing lifecycle behavior."
+  },
+  "paths": {
+    "/payments": {
+      "get": {
+        "operationId": "listPayments",
+        "summary": "List payments",
+        "responses": { "200": { "description": "Payments" } }
+      },
+      "post": {
+        "operationId": "createPayment",
+        "summary": "Create a payment",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount", "currency"],
+                "properties": {
+                  "amount": { "type": "integer", "minimum": 1 },
+                  "currency": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/payments/{id}": {
+      "get": {
+        "operationId": "getPayment",
+        "summary": "Get a payment",
+        "responses": {
+          "200": { "description": "Payment" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "patch": {
+        "operationId": "updatePayment",
+        "summary": "Update a payment",
+        "responses": { "200": { "description": "Updated" } }
+      },
+      "delete": {
+        "operationId": "deletePayment",
+        "summary": "Delete a payment",
+        "responses": { "204": { "description": "Deleted" } }
+      }
+    },
+    "/payments/{id}/capture": {
+      "post": {
+        "operationId": "capturePayment",
+        "summary": "Capture a payment",
+        "responses": { "200": { "description": "Captured" } }
+      }
+    }
+  }
+}
