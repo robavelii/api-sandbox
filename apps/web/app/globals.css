@@ -920,3 +920,16 @@ button:disabled {
   color: #b35f49;
   overflow-wrap: anywhere;
 }
+.webhook-panel {
+  margin-top: 16px;
+}
+.webhook-panel input {
+  min-width: 220px;
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #dce7da;
+  border-radius: 5px;
+}
+.webhook-panel code {
+  overflow-wrap: anywhere;
+}

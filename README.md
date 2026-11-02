@@ -18,6 +18,7 @@ Start these in separate terminals:
 ```sh
 node --env-file=.env --import tsx apps/api/src/main.ts
 npm run dev:web
+npm run dev:worker
 ```
 
 Open http://localhost:3000, create an account with a password of at least 12 characters, and choose **Explore example**. Import the contract, save the one-time sandbox key, review the inferred mappings, and approve them. The default sandbox limit is five per organization; requests are limited to 10,000 per calendar month. Use a key as a Bearer token:
@@ -59,6 +60,28 @@ Rules may add a delay of up to five seconds, inject a bounded HTTP failure befor
 
 The controlled clock starts at the version's `clock` value and can be advanced through the dashboard. Schema-generated dates use that clock, and generated values use the saved seed. Reset restores the clock, rule counts, deterministic ID sequence, and idempotency history so an identical request sequence produces the same result.
 
+## Webhooks
+
+Create an HTTPS endpoint in the dashboard and save its one-time `whsec_` signing secret. A transition rule can emit an event immediately or delay its delivery for up to 24 hours:
+
+```json
+{
+  "operation": "POST /payments/{id}/capture",
+  "action": {
+    "type": "transition",
+    "field": "status",
+    "from": ["processing"],
+    "to": "succeeded",
+    "emit": "payment.succeeded",
+    "deliverAfterMs": 5000
+  }
+}
+```
+
+The resource update and event are committed in one PostgreSQL transaction. The worker fans the event out to active endpoints, signs `timestamp.body` with HMAC-SHA256, and sends `X-SpecTwin-Signature: v1=<hex>`, `X-SpecTwin-Timestamp`, and `X-SpecTwin-Event`. Deliveries retry up to five times with exponential backoff and can be replayed in the dashboard. Receivers should deduplicate using the event `id`; delivery is at least once because a worker can crash after the receiver accepts a request but before PostgreSQL records success.
+
+Every connection and redirect requires HTTPS, resolves the hostname again, rejects credentials, fragments, non-default ports, private/link-local/reserved addresses, and pins the validated public IP while preserving TLS hostname verification. Set `WEBHOOK_ENCRYPTION_KEY` to a stable random 32-byte key encoded as base64 for both the API and worker. Losing or rotating that key without a migration makes stored signing secrets unreadable.
+
 ## Validation
 
 ```sh
@@ -87,7 +110,7 @@ The API stores hashed authentication sessions and sandbox keys. Platform session
 
 This is a foundation preview, not a production-ready complete SaaS. Next steps and release gates are in [docs/roadmap.md](docs/roadmap.md). Before exposing the application, configure HTTPS, a trusted reverse proxy and correct origin/runtime URL, secret management, database backups, monitoring, retention jobs, and abuse controls. `trustProxy` is deliberately disabled; auth rate limiting uses the direct connection IP. Public self-service registration has no email verification or recovery yet. Only one initial organization is exposed per account; collaboration is not implemented.
 
-`WEB_ORIGIN` is the exact public web origin allowed to make credentialed requests. `API_URL` is the server-side Next.js proxy destination. `NEXT_PUBLIC_RUNTIME_URL` is compiled into the dashboard at build time. `DATABASE_URL` is mandatory for the API and migrations. Production builds run with `npm run build`; then run the API with `npm run start -w @spectwin/api` and the web app with `npm run start -w @spectwin/web`, supplying environment variables through your process manager.
+`WEB_ORIGIN` is the exact public web origin allowed to make credentialed requests. `API_URL` is the server-side Next.js proxy destination. `NEXT_PUBLIC_RUNTIME_URL` is compiled into the dashboard at build time. `DATABASE_URL` is mandatory for the API, worker, and migrations. `WEBHOOK_ENCRYPTION_KEY` is mandatory before creating or delivering webhooks. Production builds run with `npm run build`; then run the API with `npm run start -w @spectwin/api`, the worker with `npm run start -w @spectwin/worker`, and the web app with `npm run start -w @spectwin/web`, supplying environment variables through your process manager.
 
 ## Repository workflow
 

@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
 import {
   match,
   validate,
@@ -252,6 +253,26 @@ export async function execute(
       "DELETE FROM resources WHERE session_id=$1 AND kind=$2 AND id=$3",
       [session.id, kind, rid],
     );
+  if (rule?.action?.emit) {
+    const eventId = randomUUID();
+    const payload = {
+      id: eventId,
+      type: rule.action.emit,
+      created_at: new Date(session.clock).toISOString(),
+      data: { object: value },
+    };
+    await c.query(
+      "INSERT INTO webhook_events(id,sandbox_id,session_id,type,payload,available_at) VALUES($1,$2,$3,$4,$5,now()+($6*interval '1 millisecond'))",
+      [
+        eventId,
+        sandbox.id,
+        session.id,
+        rule.action.emit,
+        payload,
+        rule.action.deliverAfterMs || 0,
+      ],
+    );
+  }
   const status =
     rule?.failure?.phase === "after" ? rule.failure.status : op.status;
   const data =

@@ -21,6 +21,12 @@ import {
 } from "../../../packages/engine/src/scenario.js";
 import { execute } from "./runtime.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
+import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
+import {
+  systemResolver,
+  validateWebhookUrl,
+  type Resolver,
+} from "../../worker/src/network.js";
 @Module({})
 class ApiModule {}
 class Problem extends Error {
@@ -35,7 +41,10 @@ const required = (value: any, type = "string") => {
   if (typeof value !== type) throw new Problem(400, `Expected ${type}.`);
   return value;
 };
-export async function createApp(pool: Pool) {
+export async function createApp(
+  pool: Pool,
+  options: { webhookResolver?: Resolver; webhookEncryptionKey?: string } = {},
+) {
   const app = await NestFactory.create<NestFastifyApplication>(
     ApiModule,
     new FastifyAdapter({ bodyLimit: 1_048_576, trustProxy: false }),
@@ -323,6 +332,94 @@ export async function createApp(pool: Pool) {
     ]);
     return { apiKey };
   });
+  f.get("/api/sandboxes/:id/webhooks", async (req: any) => {
+    await boxFor(req);
+    return (
+      await pool.query(
+        "SELECT id,url,description,active,created_at FROM webhook_endpoints WHERE sandbox_id=$1 ORDER BY created_at DESC",
+        [req.params.id],
+      )
+    ).rows;
+  });
+  f.post("/api/sandboxes/:id/webhooks", async (req: any, reply: any) => {
+    await boxFor(req, true);
+    const url = required(req.body?.url).trim(),
+      description = String(req.body?.description || "").trim();
+    if (url.length > 2048 || description.length > 200)
+      throw new Problem(400, "Webhook URL or description is too long.");
+    try {
+      await validateWebhookUrl(url, options.webhookResolver || systemResolver);
+    } catch (error: any) {
+      throw new Problem(400, error.message);
+    }
+    const id = randomUUID(),
+      signingSecret = `whsec_${token()}`;
+    let encrypted: string;
+    try {
+      encrypted = encryptSecret(signingSecret, options.webhookEncryptionKey);
+    } catch (error: any) {
+      throw new Problem(503, error.message);
+    }
+    await tx(async (client) => {
+      await client.query("SELECT id FROM sandboxes WHERE id=$1 FOR UPDATE", [
+        req.params.id,
+      ]);
+      const count = Number(
+        (
+          await client.query(
+            "SELECT count(*) FROM webhook_endpoints WHERE sandbox_id=$1",
+            [req.params.id],
+          )
+        ).rows[0].count,
+      );
+      if (count >= 10)
+        throw new Problem(429, "Webhook endpoint limit reached.");
+      await client.query(
+        "INSERT INTO webhook_endpoints(id,sandbox_id,url,description,secret_ciphertext) VALUES($1,$2,$3,$4,$5)",
+        [id, req.params.id, url, description, encrypted],
+      );
+    });
+    reply.code(201);
+    return { id, url, description, active: true, signingSecret };
+  });
+  f.post("/api/sandboxes/:id/webhooks/:wid/disable", async (req: any) => {
+    await boxFor(req, true);
+    const result = await pool.query(
+      "UPDATE webhook_endpoints SET active=false WHERE id=$1 AND sandbox_id=$2",
+      [req.params.wid, req.params.id],
+    );
+    if (!result.rowCount) throw new Problem(404, "Webhook endpoint not found.");
+    return { ok: true };
+  });
+  f.get("/api/sandboxes/:id/webhook-deliveries", async (req: any) => {
+    await boxFor(req);
+    return (
+      await pool.query(
+        "SELECT d.id,d.status,d.attempts,d.response_status,d.response_excerpt,d.last_error,d.delivered_at,d.created_at,e.type,e.payload->>'id' AS event_public_id,p.url FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN webhook_endpoints p ON p.id=d.endpoint_id WHERE e.sandbox_id=$1 ORDER BY d.created_at DESC LIMIT 100",
+        [req.params.id],
+      )
+    ).rows;
+  });
+  f.post(
+    "/api/sandboxes/:id/webhook-deliveries/:did/replay",
+    async (req: any) => {
+      await boxFor(req, true);
+      const result = await pool.query(
+        "UPDATE webhook_deliveries d SET status='pending',attempts=0,next_attempt_at=now(),locked_until=NULL,worker_token=NULL,last_error=NULL,updated_at=now() FROM webhook_events e WHERE d.id=$1 AND d.event_id=e.id AND e.sandbox_id=$2 AND d.status<>'delivering'",
+        [req.params.did, req.params.id],
+      );
+      if (!result.rowCount) {
+        const exists = await pool.query(
+          "SELECT 1 FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id WHERE d.id=$1 AND e.sandbox_id=$2",
+          [req.params.did, req.params.id],
+        );
+        if (exists.rowCount)
+          throw new Problem(409, "Delivery is currently in progress.");
+        throw new Problem(404, "Delivery not found.");
+      }
+      return { ok: true };
+    },
+  );
   f.post("/api/sandboxes/:id/sessions/:sid/scenario", async (req: any) => {
     await boxFor(req);
     if (!scenarios.includes(req.body?.scenario))

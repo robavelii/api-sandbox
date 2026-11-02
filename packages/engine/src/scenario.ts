@@ -5,7 +5,14 @@ export interface Rule {
   operation: string;
   times?: number;
   delayMs?: number;
-  action?: { type: "transition"; field: string; from: string[]; to: string };
+  action?: {
+    type: "transition";
+    field: string;
+    from: string[];
+    to: string;
+    emit?: string;
+    deliverAfterMs?: number;
+  };
   failure?: { phase: "before" | "after"; status: 429 | 500 | 503 };
 }
 export interface Definition {
@@ -96,6 +103,15 @@ const schema = {
               to: {
                 type: "string",
                 maxLength: 100,
+              },
+              emit: {
+                type: "string",
+                pattern: "^[a-z][a-z0-9_.-]{0,99}$",
+              },
+              deliverAfterMs: {
+                type: "integer",
+                minimum: 0,
+                maximum: 86400000,
               },
             },
           },
