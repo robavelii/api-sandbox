@@ -930,6 +930,131 @@ test(
       ).status,
       429,
     );
+    const workspaceAuth = `${auth}; st_workspace=${first.data.organization_id}`;
+    const memberAuth = `${other}; st_workspace=${first.data.organization_id}`;
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${first.data.id}/role`,
+          "POST",
+          { role: "member" },
+          workspaceAuth,
+        )
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${second.data.id}/remove`,
+          "POST",
+          {},
+          workspaceAuth,
+        )
+      ).status,
+      404,
+    );
+    await pool.query("INSERT INTO memberships VALUES($1,$2,'member')", [
+      second.data.id,
+      first.data.organization_id,
+    ]);
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/members",
+          "GET",
+          undefined,
+          workspaceAuth,
+        )
+      ).data.length,
+      2,
+    );
+    assert.equal(
+      (await request("/api/workspaces/members", "GET", undefined, memberAuth))
+        .status,
+      403,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${first.data.id}/remove`,
+          "POST",
+          {},
+          memberAuth,
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${second.data.id}/role`,
+          "POST",
+          { role: "admin" },
+          workspaceAuth,
+        )
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${second.data.id}/role`,
+          "POST",
+          { role: "owner" },
+          workspaceAuth,
+        )
+      ).status,
+      200,
+    );
+    const demotions = await Promise.all([
+      request(
+        `/api/workspaces/members/${first.data.id}/role`,
+        "POST",
+        { role: "member" },
+        workspaceAuth,
+      ),
+      request(
+        `/api/workspaces/members/${second.data.id}/role`,
+        "POST",
+        { role: "member" },
+        memberAuth,
+      ),
+    ]);
+    assert.deepEqual(demotions.map((r) => r.status).sort(), [200, 409]);
+    const ownerCount = await pool.query(
+      "SELECT count(*) FROM memberships WHERE organization_id=$1 AND role='owner'",
+      [first.data.organization_id],
+    );
+    assert.equal(ownerCount.rows[0].count, "1");
+    const remainingOwnerAuth =
+      demotions[0].status === 200 ? memberAuth : workspaceAuth;
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${first.data.id}/role`,
+          "POST",
+          { role: "owner" },
+          remainingOwnerAuth,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/members/${second.data.id}/remove`,
+          "POST",
+          {},
+          workspaceAuth,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, memberAuth)).status,
+      401,
+    );
     const device = await request("/api/auth/login", "POST", {
       email: "one@example.com",
       password: "long-test-password",
