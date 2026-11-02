@@ -1,0 +1,28 @@
+name: Repository policy
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate branch and commit conventions
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          [[ "$HEAD_BRANCH" =~ ^(feat|fix|chore|docs|refactor|test|perf|ci)/[a-z0-9]+(-[a-z0-9]+)*$ ]] || { echo 'Invalid branch name'; exit 1; }
+          while read -r commit; do
+            subject=$(git show -s --format=%s "$commit")
+            [[ "$subject" =~ ^(feat|fix|chore|docs|refactor|test|perf|ci)(\([a-z0-9-]+\))?\!?:\ .+ ]] || { echo "Invalid commit subject: $subject"; exit 1; }
+            if git show -s --format=%B "$commit" | grep -qiE '^[[:space:]]*Co-authored-by:'; then
+              echo 'Co-authored-by trailers are prohibited'; exit 1
+            fi
+          done < <(git rev-list "$BASE_SHA..$HEAD_SHA" --no-merges)
