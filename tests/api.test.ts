@@ -713,6 +713,22 @@ test(
     ).rows[0];
     assert.equal(exhausted.status, "failed");
     assert.equal(exhausted.attempts, 5);
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/webhooks/${endpoint.data.id}/disable`,
+          "POST",
+          {},
+          auth,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await request(`/api/sandboxes/${id}/webhooks`, "GET", undefined, auth))
+        .data[0].active,
+      false,
+    );
     const rotated = await request(`/api/sandboxes/${id}/key`, "POST", {}, auth);
     assert.equal(
       (await request(p + "/payments", "GET", undefined, "", apiKey)).status,
