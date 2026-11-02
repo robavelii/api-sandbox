@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
 import AccountSecurity from "./account-security";
+import WorkspacePicker from "./workspace-picker";
 import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
@@ -227,6 +228,7 @@ export default function Home() {
           <span className="local-badge">Foundation preview</span>
         </header>
         <div className="content">
+          <WorkspacePicker currentId={user.organization_id} />
           <AccountSecurity
             onSignedOut={() => {
               setRegister(false);

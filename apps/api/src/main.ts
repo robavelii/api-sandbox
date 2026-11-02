@@ -91,12 +91,20 @@ export async function createApp(
       c.release();
     }
   }
-  async function actor(req: any) {
+  async function actor(req: any, ignoreWorkspace = false) {
     const secret = req.cookies.st_session;
     if (!secret) throw new Problem(401, "Sign in required.");
+    const workspace = ignoreWorkspace ? null : req.cookies.st_workspace || null;
+    if (
+      workspace &&
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+        workspace,
+      )
+    )
+      throw new Problem(400, "Invalid workspace identifier.");
     const { rows } = await pool.query(
-      "SELECT u.id,u.email,m.organization_id,m.role FROM auth_sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>now() ORDER BY m.organization_id LIMIT 1",
-      [digest(secret)],
+      "SELECT u.id,u.email,m.organization_id,m.role FROM auth_sessions s JOIN users u ON u.id=s.user_id JOIN memberships m ON m.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>now() AND ($2::uuid IS NULL OR m.organization_id=$2) ORDER BY m.organization_id LIMIT 1",
+      [digest(secret), workspace],
     );
     if (!rows[0]) throw new Problem(401, "Session expired.");
     return rows[0];
@@ -129,6 +137,7 @@ export async function createApp(
       path: "/",
       maxAge: 604800,
     });
+    reply.clearCookie("st_workspace", { path: "/" });
   }
   f.get("/health", async () => {
     await pool.query("SELECT 1");
@@ -271,6 +280,38 @@ export async function createApp(
     return { ok: true };
   });
   f.get("/api/me", async (req: any) => actor(req));
+  f.get("/api/workspaces", async (req: any) => {
+    const user = await actor(req, true);
+    return (
+      await pool.query(
+        "SELECT o.id,o.name,m.role FROM organizations o JOIN memberships m ON m.organization_id=o.id WHERE m.user_id=$1 ORDER BY o.name,o.id",
+        [user.id],
+      )
+    ).rows;
+  });
+  f.post("/api/workspaces/select", async (req: any, reply: any) => {
+    const user = await actor(req, true);
+    const id = required(req.body?.workspaceId);
+    if (
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+        id,
+      )
+    )
+      throw new Problem(400, "Invalid workspace identifier.");
+    const membership = await pool.query(
+      "SELECT role FROM memberships WHERE user_id=$1 AND organization_id=$2",
+      [user.id, id],
+    );
+    if (!membership.rowCount) throw new Problem(404, "Workspace not found.");
+    reply.setCookie("st_workspace", id, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 604800,
+    });
+    return { id, role: membership.rows[0].role };
+  });
   f.get("/api/usage", async (req: any) => {
     const u = await actor(req);
     return (
