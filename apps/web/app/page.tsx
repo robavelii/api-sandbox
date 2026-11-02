@@ -4,6 +4,7 @@ import ScenarioEditor from "./scenario-editor";
 import AccountSecurity from "./account-security";
 import WorkspacePicker from "./workspace-picker";
 import WorkspaceMembers from "./workspace-members";
+import WorkspaceInvitations from "./workspace-invitations";
 import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
@@ -230,6 +231,7 @@ export default function Home() {
         </header>
         <div className="content">
           <WorkspacePicker currentId={user.organization_id} />
+          <WorkspaceInvitations owner={user.role === "owner"} />
           {user.role === "owner" && (
             <WorkspaceMembers currentUserId={user.id} />
           )}
