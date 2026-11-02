@@ -1,5 +1,58 @@
 # SpecTwin
 
-An API simulation workbench for reproducible integration journeys.
+A simulation workbench for repeatable API integration journeys. This branch delivers the first SaaS foundation: a Next.js dashboard, NestJS/Fastify API, shared contract compiler, and durable PostgreSQL state.
 
-Product and implementation changes are developed through pull requests.
+## Run locally
+
+Requires Node.js 24 and Docker (or PostgreSQL 17).
+
+```sh
+npm ci
+cp .env.example .env
+docker compose up -d
+node --env-file=.env --import tsx scripts/migrate.ts
+```
+
+Start these in separate terminals:
+
+```sh
+node --env-file=.env --import tsx apps/api/src/main.ts
+npm run dev:web
+```
+
+Open http://localhost:3000, create an account with a password of at least 12 characters, and choose **Explore example**. Import the contract, save the one-time sandbox key, review the inferred mappings, and approve them. The default sandbox limit is five per organization; requests are limited to 10,000 per calendar month. Use a key as a Bearer token:
+
+```sh
+curl "$BASE_URL/payments" -X POST \
+  -H "Authorization: Bearer $SANDBOX_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"amount":2500,"currency":"USD"}'
+curl "$BASE_URL/payments/pay_000001" -H "Authorization: Bearer $SANDBOX_KEY"
+```
+
+`BASE_URL` is the endpoint shown in the dashboard. Add `X-SpecTwin-Session: ci` after creating a session called `ci` to isolate its state. Reset deletes resources/logs and resets the ID sequence. Rotating a key revokes the prior key immediately.
+
+## Validation
+
+```sh
+npm run format:check
+npm run typecheck
+npm test
+npm run build
+```
+
+The integration suite is enabled by `TEST_DATABASE_URL`. It **drops and recreates the public schema** of that database; use a dedicated disposable database, never development or production data. CI provisions its own database and always runs the integration suite. Without that variable only engine and password tests run.
+
+## Behavior and boundaries
+
+The compiler accepts OpenAPI 3.0/3.1 JSON and YAML, validates inline/local-reference JSON request and response schemas, and never fetches external references. Only declared routes execute. Simple collection/item patterns receive inferred CRUD mappings; users must explicitly approve activation. Unconfigured custom actions return 501. Missing fields in declared response schemas prevent mutation with 422 rather than silently emitting incompatible resources. This release does not generate missing response fields or pagination envelopes.
+
+The API stores hashed authentication sessions and sandbox keys. Platform sessions use HttpOnly, SameSite cookies (Secure in production). Every control-plane lookup checks organization membership; runtime keys scope to a sandbox. PostgreSQL transactions lock sessions to serialize concurrent updates, and quotas update atomically. Request logs contain paths and execution metadata, excluding bodies and authorization headers. Avoid sensitive values in URL paths.
+
+This is a foundation preview, not a production-ready complete SaaS. Next steps and release gates are in [docs/roadmap.md](docs/roadmap.md). Before exposing the application, configure HTTPS, a trusted reverse proxy and correct origin/runtime URL, secret management, database backups, monitoring, retention jobs, and abuse controls. `trustProxy` is deliberately disabled; auth rate limiting uses the direct connection IP. Public self-service registration has no email verification or recovery yet. Only one initial organization is exposed per account; collaboration is not implemented.
+
+`WEB_ORIGIN` is the exact public web origin allowed to make credentialed requests. `API_URL` is the server-side Next.js proxy destination. `NEXT_PUBLIC_RUNTIME_URL` is compiled into the dashboard at build time. `DATABASE_URL` is mandatory for the API and migrations. Production builds run with `npm run build`; then run the API with `npm run start -w @spectwin/api` and the web app with `npm run start -w @spectwin/web`, supplying environment variables through your process manager.
+
+## Repository workflow
+
+See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md). Major development retains the owner's configured Git identity. Small maintenance commits use Codex. Co-author trailers are prohibited. Changes are reviewed through topic branches and PRs.
