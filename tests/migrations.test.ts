@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Pool } from "pg";
@@ -10,6 +10,9 @@ test(
   "migrations preserve populated state, serialize concurrent runs, rerun safely, and roll back as a unit",
   { skip: !process.env.TEST_DATABASE_URL },
   async () => {
+    const migrationCount = (await readdir("migrations")).filter((name) =>
+      name.endsWith(".sql"),
+    ).length;
     const db = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     try {
       await db.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
@@ -56,7 +59,7 @@ test(
           (await db.query("SELECT count(*) FROM schema_migrations")).rows[0]
             .count,
         ),
-        2,
+        migrationCount,
       );
       assert.equal(
         (
@@ -90,7 +93,7 @@ test(
           (await db.query("SELECT count(*) FROM schema_migrations")).rows[0]
             .count,
         ),
-        2,
+        migrationCount,
       );
 
       await db.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");

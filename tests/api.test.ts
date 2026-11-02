@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { readFile } from "node:fs/promises";
 import { createApp } from "../apps/api/src/main.js";
 import { hashPassword, verifyPassword } from "../apps/api/src/auth.js";
+import { deliverOne, fanoutOne } from "../apps/worker/src/worker.js";
 test("password hashing uses distinct salts and rejects incorrect passwords", async () => {
   const a = await hashPassword("long-test-password");
   const b = await hashPassword("long-test-password");
@@ -19,7 +20,13 @@ test(
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     await pool.query(await readFile("migrations/001_foundation.sql", "utf8"));
     await pool.query(await readFile("migrations/002_scenarios.sql", "utf8"));
-    const app = await createApp(pool);
+    await pool.query(await readFile("migrations/003_webhooks.sql", "utf8"));
+    const encryptionKey = Buffer.alloc(32, 7).toString("base64");
+    const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
+    const app = await createApp(pool, {
+      webhookEncryptionKey: encryptionKey,
+      webhookResolver: publicResolver,
+    });
     t.after(async () => {
       await app.close();
       await pool.end();
@@ -491,6 +498,221 @@ test(
     );
     assert.equal(trace.data[0].version_id, conflict.data.id);
     assert.ok(trace.data[0].simulated_at);
+    const endpoint = await request(
+      `/api/sandboxes/${id}/webhooks`,
+      "POST",
+      { url: "https://hooks.example.test/events", description: "CI receiver" },
+      auth,
+    );
+    assert.equal(endpoint.status, 201);
+    assert.match(endpoint.data.signingSecret, /^whsec_/);
+    assert.equal(
+      (await request(`/api/sandboxes/${id}/webhooks`, "GET", undefined, other))
+        .status,
+      404,
+    );
+    const listedEndpoints = await request(
+      `/api/sandboxes/${id}/webhooks`,
+      "GET",
+      undefined,
+      auth,
+    );
+    assert.equal(listedEndpoints.data.length, 1);
+    assert.equal(listedEndpoints.data[0].signingSecret, undefined);
+    const webhookDefinition = {
+      version: 1,
+      name: "Capture webhook",
+      seed: "webhook-test",
+      clock: "2026-07-01T00:00:00.000Z",
+      idempotency: "replay",
+      rules: [
+        {
+          operation: "POST /payments/{id}/capture",
+          action: {
+            type: "transition",
+            field: "status",
+            from: ["processing"],
+            to: "succeeded",
+            emit: "payment.succeeded",
+            deliverAfterMs: 5000,
+          },
+        },
+      ],
+    };
+    const webhookVersion = await request(
+      `/api/sandboxes/${id}/versions`,
+      "POST",
+      webhookDefinition,
+      auth,
+    );
+    assert.equal(webhookVersion.status, 201);
+    await request(
+      `/api/sandboxes/${id}/versions/${webhookVersion.data.id}/approve`,
+      "POST",
+      {},
+      auth,
+    );
+    await request(
+      `/api/sandboxes/${id}/sessions/${sessionId}/configure`,
+      "POST",
+      { versionId: webhookVersion.data.id },
+      auth,
+    );
+    const webhookPayment = await send("/payments", "POST", {
+      amount: 9,
+      currency: "USD",
+    });
+    assert.equal(webhookPayment.status, 201);
+    assert.equal(
+      (await send(`/payments/${webhookPayment.data.id}/capture`, "POST", {}))
+        .status,
+      200,
+    );
+    assert.equal(await fanoutOne(pool), false);
+    await pool.query("UPDATE webhook_events SET available_at=now()");
+    assert.equal(await fanoutOne(pool), true);
+    assert.equal(await fanoutOne(pool), false);
+    assert.equal(
+      Number(
+        (await pool.query("SELECT count(*) FROM webhook_deliveries")).rows[0]
+          .count,
+      ),
+      1,
+    );
+    const sent: { headers: Record<string, string>; body: string }[] = [];
+    let response = 500;
+    const sender = async (
+      _url: URL,
+      _address: { address: string; family: number },
+      body: string,
+      headers: Record<string, string>,
+    ) => {
+      sent.push({ headers, body });
+      return { status: response, body: response === 500 ? "retry" : "ok" };
+    };
+    assert.equal(
+      await deliverOne(pool, {
+        encryptionKey,
+        resolver: publicResolver,
+        sender,
+      }),
+      true,
+    );
+    let delivery = (await pool.query("SELECT * FROM webhook_deliveries"))
+      .rows[0];
+    assert.equal(delivery.status, "pending");
+    assert.equal(delivery.attempts, 1);
+    assert.match(sent[0].headers["x-spectwin-signature"], /^v1=[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(sent[0].body).type, "payment.succeeded");
+    await pool.query(
+      "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second'",
+    );
+    response = 200;
+    await deliverOne(pool, {
+      encryptionKey,
+      resolver: publicResolver,
+      sender,
+    });
+    delivery = (await pool.query("SELECT * FROM webhook_deliveries")).rows[0];
+    assert.equal(delivery.status, "delivered");
+    assert.equal(delivery.attempts, 2);
+    await request(
+      `/api/sandboxes/${id}/webhook-deliveries/${delivery.id}/replay`,
+      "POST",
+      {},
+      auth,
+    );
+    await pool.query(
+      "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1",
+      [delivery.id],
+    );
+    await deliverOne(pool, {
+      encryptionKey,
+      resolver: publicResolver,
+      sender,
+    });
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT attempts FROM webhook_deliveries WHERE id=$1",
+          [delivery.id],
+        )
+      ).rows[0].attempts,
+      1,
+    );
+    await pool.query(
+      "UPDATE webhook_deliveries SET status='delivering',locked_until=now()-interval '1 second',worker_token=gen_random_uuid(),next_attempt_at=now()-interval '1 second' WHERE id=$1",
+      [delivery.id],
+    );
+    assert.equal(
+      await deliverOne(pool, {
+        encryptionKey,
+        resolver: publicResolver,
+        sender,
+      }),
+      true,
+    );
+    assert.equal(
+      (
+        await pool.query("SELECT status FROM webhook_deliveries WHERE id=$1", [
+          delivery.id,
+        ])
+      ).rows[0].status,
+      "delivered",
+    );
+    await pool.query(
+      "UPDATE webhook_deliveries SET status='delivering',locked_until=now()+interval '1 minute',worker_token=gen_random_uuid() WHERE id=$1",
+      [delivery.id],
+    );
+    const replayInProgress = await request(
+      `/api/sandboxes/${id}/webhook-deliveries/${delivery.id}/replay`,
+      "POST",
+      {},
+      auth,
+    );
+    assert.equal(replayInProgress.status, 409);
+    assert.equal(
+      replayInProgress.data.error,
+      "Delivery is currently in progress.",
+    );
+    await pool.query(
+      "UPDATE webhook_deliveries SET status='delivered',locked_until=NULL,worker_token=NULL WHERE id=$1",
+      [delivery.id],
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/webhook-deliveries/${delivery.id}/replay`,
+          "POST",
+          {},
+          auth,
+        )
+      ).status,
+      200,
+    );
+    response = 500;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await pool.query(
+        "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1",
+        [delivery.id],
+      );
+      assert.equal(
+        await deliverOne(pool, {
+          encryptionKey,
+          resolver: publicResolver,
+          sender,
+        }),
+        true,
+      );
+    }
+    const exhausted = (
+      await pool.query(
+        "SELECT status,attempts FROM webhook_deliveries WHERE id=$1",
+        [delivery.id],
+      )
+    ).rows[0];
+    assert.equal(exhausted.status, "failed");
+    assert.equal(exhausted.attempts, 5);
     const rotated = await request(`/api/sandboxes/${id}/key`, "POST", {}, auth);
     assert.equal(
       (await request(p + "/payments", "GET", undefined, "", apiKey)).status,

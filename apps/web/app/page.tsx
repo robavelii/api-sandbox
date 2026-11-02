@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
+import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
   name: string;
@@ -194,6 +195,9 @@ export default function Home() {
         </a>
         <a className="nav" href="#scenarios">
           ◈ &nbsp; Scenarios
+        </a>
+        <a className="nav" href="#webhooks">
+          ↗ &nbsp; Webhooks
         </a>
         <a className="nav" href="#activity">
           ☷ &nbsp; Request activity
@@ -493,6 +497,7 @@ export default function Home() {
                   await activity();
                 }}
               />
+              <WebhookPanel boxId={box.id} />
               <div className="grid lower">
                 <section className="panel" id="operations">
                   <div className="eyebrow muted">FROM YOUR CONTRACT</div>
