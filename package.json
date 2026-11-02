@@ -23,6 +23,8 @@
     "test:migrations": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/migrations-junit.xml tests/migrations.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:report": "playwright show-report artifacts/playwright-report",
+    "test:load:smoke": "LOAD_PROFILE=smoke node --import tsx tests/load/runtime-load.ts",
+    "test:load:nightly": "LOAD_PROFILE=nightly node --import tsx tests/load/runtime-load.ts",
     "migrate": "node --import tsx scripts/migrate.ts",
     "ci:audit": "node --import tsx scripts/audit-dependencies.ts",
     "ci:validate": "node --import tsx scripts/validate-workflows.ts",
