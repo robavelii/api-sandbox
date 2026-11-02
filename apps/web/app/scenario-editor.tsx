@@ -54,6 +54,7 @@ export default function ScenarioEditor({
   const [versions, setVersions] = useState<Version[]>([]),
     [selected, setSelected] = useState(""),
     [source, setSource] = useState(""),
+    [proposals, setProposals] = useState<any[]>([]),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const version = versions.find((v) => v.id === selected);
@@ -66,6 +67,7 @@ export default function ScenarioEditor({
   useEffect(() => {
     let active = true;
     setVersions([]);
+    setProposals([]);
     setSource("");
     setError("");
     api(`/sandboxes/${boxId}/versions`)
@@ -166,6 +168,45 @@ export default function ScenarioEditor({
           Load retry example
         </button>
       </div>
+      <div className="scenario-toolbar">
+        <button
+          className="button light"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              setProposals(await api(`/sandboxes/${boxId}/proposals`));
+            })
+          }
+        >
+          Suggest retry scenarios
+        </button>
+        {proposals.length > 0 && (
+          <select
+            aria-label="Suggested scenario"
+            defaultValue=""
+            onChange={(event) => {
+              const proposal = proposals[Number(event.target.value)];
+              if (proposal)
+                setSource(JSON.stringify(proposal.definition, null, 2));
+            }}
+          >
+            <option value="" disabled>
+              Choose a draft to review
+            </option>
+            {proposals.map((proposal, index) => (
+              <option key={index} value={index}>
+                {proposal.definition.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {proposals.length > 0 && (
+        <p>
+          Template suggestions use declared operations. Review the rule below,
+          save a draft, and approve it before activation.
+        </p>
+      )}
       <label className="editor-label" htmlFor="definition">
         Typed scenario definition
       </label>

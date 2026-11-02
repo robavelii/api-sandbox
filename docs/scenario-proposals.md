@@ -12,8 +12,12 @@ The entire operation has a bounded deadline and abort signal. Providers receive
 a cloned contract and cannot alter the source used for validation. Imported
 descriptions and prompts must be treated as untrusted data by adapters.
 
-This PR supplies the engine foundation. A provider adapter, durable organization
-budgets, authenticated proposal endpoints and dashboard review remain to be
+The authenticated `GET /api/sandboxes/:id/proposals` endpoint returns template
+suggestions scoped to the current organization. In the scenario editor, choose
+**Suggest retry scenarios** and select a draft to review. This only changes the
+editor contents; saving, owner approval and activation remain explicit actions.
+
+A model provider adapter and durable organization budgets remain to be
 implemented. Adapters must enforce token and cost limits and honor cancellation.
 No live model provider has been configured or tested here. Returned drafts use
 the existing version creation, owner approval and session configuration flow
