@@ -26,6 +26,7 @@ import {
   type ProposalProvider,
 } from "../../../packages/engine/src/proposals.js";
 import { openAIProposalProvider } from "./proposal-provider.js";
+import { verificationMailer } from "./verification-mail.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
 import {
@@ -53,9 +54,11 @@ export async function createApp(
     webhookResolver?: Resolver;
     webhookEncryptionKey?: string;
     proposalProvider?: ProposalProvider;
+    sendVerification?: (email: string, code: string) => Promise<void>;
   } = {},
 ) {
   const proposalProvider = options.proposalProvider || openAIProposalProvider();
+  const sendVerification = options.sendVerification || verificationMailer();
   const app = await NestFactory.create<NestFastifyApplication>(
     ApiModule,
     new FastifyAdapter({ bodyLimit: 1_048_576, trustProxy: false }),
@@ -280,6 +283,74 @@ export async function createApp(
     return { ok: true };
   });
   f.get("/api/me", async (req: any) => actor(req));
+  f.get("/api/auth/email-status", async (req: any) => {
+    const user = await actor(req, true);
+    const row = (
+      await pool.query("SELECT email_verified_at FROM users WHERE id=$1", [
+        user.id,
+      ])
+    ).rows[0];
+    return { verified: Boolean(row.email_verified_at) };
+  });
+  f.post("/api/auth/email-verification", async (req: any) => {
+    const user = await actor(req, true);
+    await authLimit(req);
+    if (!sendVerification)
+      throw new Problem(503, "Verification email delivery is not configured.");
+    const code = token();
+    await tx(async (client) => {
+      const row = (
+        await client.query(
+          "SELECT email_verified_at FROM users WHERE id=$1 FOR UPDATE",
+          [user.id],
+        )
+      ).rows[0];
+      if (row.email_verified_at)
+        throw new Problem(409, "Email is already verified.");
+      const reservation = await client.query(
+        "INSERT INTO email_verifications(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours') ON CONFLICT(user_id) DO UPDATE SET token_hash=$2,expires_at=now()+interval '24 hours',sent_at=now() WHERE email_verifications.sent_at<now()-interval '1 minute' RETURNING user_id",
+        [user.id, digest(code)],
+      );
+      if (!reservation.rowCount)
+        throw new Problem(
+          429,
+          "Wait one minute before requesting another verification email.",
+        );
+    });
+    try {
+      await sendVerification(user.email, code);
+    } catch {
+      await pool.query(
+        "UPDATE email_verifications SET expires_at=now() WHERE user_id=$1 AND token_hash=$2",
+        [user.id, digest(code)],
+      );
+      throw new Problem(502, "Unable to deliver verification email.");
+    }
+    return { ok: true };
+  });
+  f.post("/api/auth/email-verification/confirm", async (req: any) => {
+    const user = await actor(req, true);
+    await authLimit(req);
+    const code = required(req.body?.code);
+    if (!/^[a-f0-9]{64}$/.test(code))
+      throw new Problem(400, "Invalid or expired verification code.");
+    await tx(async (client) => {
+      await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [
+        user.id,
+      ]);
+      const consumed = await client.query(
+        "DELETE FROM email_verifications WHERE user_id=$1 AND token_hash=$2 AND expires_at>now() RETURNING user_id",
+        [user.id, digest(code)],
+      );
+      if (!consumed.rowCount)
+        throw new Problem(400, "Invalid or expired verification code.");
+      await client.query(
+        "UPDATE users SET email_verified_at=now() WHERE id=$1",
+        [user.id],
+      );
+    });
+    return { ok: true };
+  });
   f.get("/api/workspaces", async (req: any) => {
     const user = await actor(req, true);
     return (

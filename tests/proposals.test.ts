@@ -3,6 +3,30 @@ import assert from "node:assert/strict";
 import { compile } from "../packages/engine/src/index.js";
 import { defaultDefinition } from "../packages/engine/src/scenario.js";
 import { openAIProposalProvider } from "../apps/api/src/proposal-provider.js";
+import { verificationMailer } from "../apps/api/src/verification-mail.js";
+
+test("verification mail uses a fixed provider and suppresses private errors", async () => {
+  assert.equal(verificationMailer("", ""), undefined);
+  let status = 200;
+  const send = verificationMailer(
+    "secret",
+    "SpecTwin <sender@example.com>",
+    (async (url, options) => {
+      assert.equal(url, "https://api.resend.com/emails");
+      assert.equal(options?.redirect, "error");
+      assert.deepEqual(JSON.parse(options?.body as string).to, [
+        "user@example.com",
+      ]);
+      return new Response("private detail", { status });
+    }) as typeof fetch,
+  )!;
+  await send("user@example.com", "test-code");
+  status = 500;
+  await assert.rejects(
+    () => send("user@example.com", "test-code"),
+    /^Error: Verification email provider failed\.$/,
+  );
+});
 
 test("configured model adapter bounds responses and hides upstream secrets", async () => {
   assert.equal(openAIProposalProvider(""), undefined);

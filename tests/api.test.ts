@@ -24,9 +24,16 @@ test(
     await pool.query(
       await readFile("migrations/004_proposal_usage.sql", "utf8"),
     );
+    await pool.query(
+      await readFile("migrations/005_email_verification.sql", "utf8"),
+    );
+    let verificationCode = "";
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
     const app = await createApp(pool, {
+      sendVerification: async (_email, code) => {
+        verificationCode = code;
+      },
       proposalProvider: async () => ({
         version: 1,
         name: "AI draft",
@@ -78,6 +85,80 @@ test(
       password: "long-test-password",
     });
     const other = second.cookie;
+    assert.equal(
+      (await request("/api/auth/email-verification", "POST", {}, other)).status,
+      200,
+    );
+    const expiredCode = verificationCode;
+    await pool.query(
+      "UPDATE email_verifications SET expires_at=now()-interval '1 second' WHERE user_id=$1",
+      [second.data.id],
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/auth/email-verification/confirm",
+          "POST",
+          { code: expiredCode },
+          other,
+        )
+      ).status,
+      400,
+    );
+    assert.equal(
+      (await request("/api/auth/email-status", "GET", undefined, auth)).data
+        .verified,
+      false,
+    );
+    assert.equal(
+      (await request("/api/auth/email-verification", "POST", {}, auth)).status,
+      200,
+    );
+    assert.match(verificationCode, /^[a-f0-9]{64}$/);
+    assert.notEqual(
+      (
+        await pool.query(
+          "SELECT token_hash FROM email_verifications WHERE user_id=$1",
+          [first.data.id],
+        )
+      ).rows[0].token_hash,
+      verificationCode,
+    );
+    assert.equal(
+      (await request("/api/auth/email-verification", "POST", {}, auth)).status,
+      429,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/auth/email-verification/confirm",
+          "POST",
+          { code: verificationCode },
+          other,
+        )
+      ).status,
+      400,
+    );
+    const confirmations = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        request(
+          "/api/auth/email-verification/confirm",
+          "POST",
+          { code: verificationCode },
+          auth,
+        ),
+      ),
+    );
+    assert.deepEqual(confirmations.map((r) => r.status).sort(), [200, 400]);
+    assert.equal(
+      (await request("/api/auth/email-status", "GET", undefined, auth)).data
+        .verified,
+      true,
+    );
+    assert.equal(
+      (await request("/api/auth/email-verification", "POST", {}, auth)).status,
+      409,
+    );
     const spec = JSON.parse(
       await readFile("apps/web/public/payments.json", "utf8"),
     );
