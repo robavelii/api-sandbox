@@ -174,6 +174,9 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
+  await expect(
+    page.getByLabel("Active workspace").locator("option"),
+  ).toContainText("My workspace");
   await page.getByText("Account security", { exact: true }).click();
   await page.getByRole("button", { name: "Sign out other devices" }).click();
   await expect(

@@ -111,6 +111,83 @@ test(
     );
     assert.equal(created.status, 201);
     const { id, apiKey, sessionId } = created.data;
+    assert.equal(
+      (await request("/api/workspaces", "GET", undefined, auth)).data.length,
+      1,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/select",
+          "POST",
+          { workspaceId: second.data.organization_id },
+          auth,
+        )
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/select",
+          "POST",
+          { workspaceId: "invalid" },
+          auth,
+        )
+      ).status,
+      400,
+    );
+    await pool.query("INSERT INTO memberships VALUES($1,$2,'member')", [
+      first.data.id,
+      second.data.organization_id,
+    ]);
+    const picked = await request(
+      "/api/workspaces/select",
+      "POST",
+      { workspaceId: second.data.organization_id },
+      auth,
+    );
+    assert.equal(picked.status, 200);
+    const inOtherWorkspace = `${auth}; ${picked.cookie}`;
+    assert.equal(
+      (await request("/api/me", "GET", undefined, inOtherWorkspace)).data.role,
+      "member",
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/sessions`,
+          "GET",
+          undefined,
+          inOtherWorkspace,
+        )
+      ).status,
+      404,
+    );
+    await pool.query(
+      "DELETE FROM memberships WHERE user_id=$1 AND organization_id=$2",
+      [first.data.id, second.data.organization_id],
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, inOtherWorkspace)).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/workspaces", "GET", undefined, inOtherWorkspace))
+        .status,
+      200,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/select",
+          "POST",
+          { workspaceId: first.data.organization_id },
+          inOtherWorkspace,
+        )
+      ).status,
+      200,
+    );
     const aiDraft = await request(
       `/api/sandboxes/${id}/proposals`,
       "POST",
