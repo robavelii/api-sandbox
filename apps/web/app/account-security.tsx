@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import EmailVerification from "./email-verification";
 
 export default function AccountSecurity({
   onSignedOut,
@@ -35,6 +36,7 @@ export default function AccountSecurity({
   return (
     <details className="panel" id="account-security">
       <summary>Account security</summary>
+      <EmailVerification />
       <p>
         Changing your password signs out other devices and refreshes your
         current session.

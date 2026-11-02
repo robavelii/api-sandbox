@@ -187,6 +187,12 @@ test("a team can configure and replay an isolated integration journey", async ({
     page.getByLabel("Active workspace").locator("option"),
   ).toContainText("My workspace");
   await page.getByText("Account security", { exact: true }).click();
+  await page.getByRole("button", { name: "Send verification code" }).click();
+  await expect(
+    page.getByText("Verification email delivery is not configured.", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Sign out other devices" }).click();
   await expect(
     page.getByText("Other devices have been signed out.", { exact: true }),
