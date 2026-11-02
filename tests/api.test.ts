@@ -27,6 +27,9 @@ test(
     await pool.query(
       await readFile("migrations/005_email_verification.sql", "utf8"),
     );
+    await pool.query(
+      await readFile("migrations/006_workspace_invitations.sql", "utf8"),
+    );
     let verificationCode = "";
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
@@ -1012,7 +1015,122 @@ test(
       429,
     );
     const workspaceAuth = `${auth}; st_workspace=${first.data.organization_id}`;
+    const invitation = await request(
+      "/api/workspaces/invitations",
+      "POST",
+      { email: second.data.email },
+      workspaceAuth,
+    );
+    assert.equal(invitation.status, 200);
+    assert.match(invitation.data.code, /^[a-f0-9]{64}$/);
+    const pendingInvites = await request(
+      "/api/workspaces/invitations",
+      "GET",
+      undefined,
+      workspaceAuth,
+    );
+    assert.equal(pendingInvites.data.length, 1);
+    assert.equal(pendingInvites.data[0].code, undefined);
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/invitations/accept",
+          "POST",
+          { code: invitation.data.code },
+          auth,
+        )
+      ).status,
+      404,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/invitations/accept",
+          "POST",
+          { code: invitation.data.code },
+          other,
+        )
+      ).status,
+      403,
+    );
+    await pool.query("UPDATE users SET email_verified_at=now() WHERE id=$1", [
+      second.data.id,
+    ]);
+    const acceptances = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        request(
+          "/api/workspaces/invitations/accept",
+          "POST",
+          { code: invitation.data.code },
+          other,
+        ),
+      ),
+    );
+    assert.deepEqual(acceptances.map((r) => r.status).sort(), [200, 404]);
+    const revocable = await request(
+      "/api/workspaces/invitations",
+      "POST",
+      { email: "future@example.com" },
+      workspaceAuth,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/workspaces/invitations/${revocable.data.id}/revoke`,
+          "POST",
+          {},
+          workspaceAuth,
+        )
+      ).status,
+      200,
+    );
+    await pool.query(
+      "DELETE FROM memberships WHERE user_id=$1 AND organization_id=$2",
+      [second.data.id, first.data.organization_id],
+    );
     const memberAuth = `${other}; st_workspace=${first.data.organization_id}`;
+    const selfInvite = await request(
+      "/api/workspaces/invitations",
+      "POST",
+      { email: first.data.email },
+      workspaceAuth,
+    );
+    await pool.query(
+      "UPDATE workspace_invitations SET expires_at=now()-interval '1 second' WHERE id=$1",
+      [selfInvite.data.id],
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/invitations/accept",
+          "POST",
+          { code: selfInvite.data.code },
+          auth,
+        )
+      ).status,
+      404,
+    );
+    const replacement = await request(
+      "/api/workspaces/invitations",
+      "POST",
+      { email: first.data.email },
+      workspaceAuth,
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/invitations/accept",
+          "POST",
+          { code: replacement.data.code },
+          auth,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, workspaceAuth)).data.role,
+      "owner",
+    );
     assert.equal(
       (
         await request(

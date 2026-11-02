@@ -360,6 +360,126 @@ export async function createApp(
       )
     ).rows;
   });
+  f.get("/api/workspaces/invitations", async (req: any) => {
+    const user = await actor(req);
+    if (user.role !== "owner")
+      throw new Problem(403, "Workspace owner access required.");
+    return (
+      await pool.query(
+        "SELECT id,email,expires_at,created_at FROM workspace_invitations WHERE organization_id=$1 AND expires_at>now() ORDER BY created_at DESC",
+        [user.organization_id],
+      )
+    ).rows;
+  });
+  f.post("/api/workspaces/invitations", async (req: any) => {
+    const user = await actor(req);
+    const email = required(req.body?.email).trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      throw new Problem(400, "Use a valid email address.");
+    const code = token(),
+      id = randomUUID();
+    await tx(async (client) => {
+      await client.query(
+        "SELECT id FROM organizations WHERE id=$1 FOR UPDATE",
+        [user.organization_id],
+      );
+      const caller = (
+        await client.query(
+          "SELECT m.role,u.email_verified_at FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.user_id=$1 AND m.organization_id=$2",
+          [user.id, user.organization_id],
+        )
+      ).rows[0];
+      if (caller?.role !== "owner")
+        throw new Problem(403, "Workspace owner access required.");
+      if (!caller.email_verified_at)
+        throw new Problem(403, "Verify your email before inviting members.");
+      await client.query(
+        "DELETE FROM workspace_invitations WHERE organization_id=$1 AND (expires_at<=now() OR email=$2)",
+        [user.organization_id, email],
+      );
+      const count = Number(
+        (
+          await client.query(
+            "SELECT count(*) FROM workspace_invitations WHERE organization_id=$1",
+            [user.organization_id],
+          )
+        ).rows[0].count,
+      );
+      if (count >= 100)
+        throw new Problem(429, "Workspace invitation limit reached.");
+      await client.query(
+        "INSERT INTO workspace_invitations(id,organization_id,email,token_hash) VALUES($1,$2,$3,$4)",
+        [id, user.organization_id, email, digest(code)],
+      );
+    });
+    return { id, email, code };
+  });
+  f.post("/api/workspaces/invitations/:iid/revoke", async (req: any) => {
+    const user = await actor(req);
+    await tx(async (client) => {
+      await client.query(
+        "SELECT id FROM organizations WHERE id=$1 FOR UPDATE",
+        [user.organization_id],
+      );
+      const caller = (
+        await client.query(
+          "SELECT role FROM memberships WHERE user_id=$1 AND organization_id=$2",
+          [user.id, user.organization_id],
+        )
+      ).rows[0];
+      if (caller?.role !== "owner")
+        throw new Problem(403, "Workspace owner access required.");
+      const result = await client.query(
+        "DELETE FROM workspace_invitations WHERE id=$1 AND organization_id=$2",
+        [req.params.iid, user.organization_id],
+      );
+      if (!result.rowCount) throw new Problem(404, "Invitation not found.");
+    });
+    return { ok: true };
+  });
+  f.post("/api/workspaces/invitations/accept", async (req: any) => {
+    const user = await actor(req, true);
+    await authLimit(req);
+    const code = required(req.body?.code);
+    if (!/^[a-f0-9]{64}$/.test(code))
+      throw new Problem(400, "Invalid invitation code.");
+    return tx(async (client) => {
+      const invitation = (
+        await client.query(
+          "SELECT organization_id FROM workspace_invitations WHERE token_hash=$1",
+          [digest(code)],
+        )
+      ).rows[0];
+      if (!invitation)
+        throw new Problem(404, "Invitation not found or expired.");
+      await client.query(
+        "SELECT id FROM organizations WHERE id=$1 FOR UPDATE",
+        [invitation.organization_id],
+      );
+      const account = (
+        await client.query(
+          "SELECT email,email_verified_at FROM users WHERE id=$1",
+          [user.id],
+        )
+      ).rows[0];
+      if (!account.email_verified_at)
+        throw new Problem(
+          403,
+          "Verify your email before accepting invitations.",
+        );
+      const consumed = await client.query(
+        "DELETE FROM workspace_invitations WHERE token_hash=$1 AND email=$2 AND expires_at>now() RETURNING organization_id",
+        [digest(code), account.email],
+      );
+      if (!consumed.rowCount)
+        throw new Problem(404, "Invitation not found or expired.");
+      await client.query(
+        "INSERT INTO memberships(user_id,organization_id,role) VALUES($1,$2,'member') ON CONFLICT DO NOTHING",
+        [user.id, invitation.organization_id],
+      );
+      return { workspaceId: invitation.organization_id };
+    });
+  });
   f.get("/api/workspaces/members", async (req: any) => {
     const user = await actor(req);
     if (user.role !== "owner")
