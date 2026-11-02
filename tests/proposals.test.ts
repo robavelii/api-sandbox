@@ -2,6 +2,49 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { compile } from "../packages/engine/src/index.js";
 import { defaultDefinition } from "../packages/engine/src/scenario.js";
+import { openAIProposalProvider } from "../apps/api/src/proposal-provider.js";
+
+test("configured model adapter bounds responses and hides upstream secrets", async () => {
+  assert.equal(openAIProposalProvider(""), undefined);
+  const request = {
+    prompt: "retry",
+    contract,
+    signal: new AbortController().signal,
+  };
+  let response = new Response(
+    JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(defaultDefinition()) } }],
+    }),
+  );
+  const transport = (async (url, options) => {
+    assert.equal(url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(options?.redirect, "error");
+    assert.equal(
+      JSON.parse(options?.body as string).max_completion_tokens,
+      2048,
+    );
+    return response;
+  }) as typeof fetch;
+  const provider = openAIProposalProvider(
+    "test-secret",
+    "test-model",
+    transport,
+  )!;
+  assert.deepEqual(await provider(request), defaultDefinition());
+  response = new Response(
+    JSON.stringify({ choices: [{ message: { content: "not json" } }] }),
+  );
+  assert.equal(await provider(request), null);
+  response = new Response("private provider detail", { status: 429 });
+  await assert.rejects(
+    () => provider(request),
+    /^Error: Model provider request failed\.$/,
+  );
+  response = new Response(null);
+  await assert.rejects(() => provider(request), /no body/);
+  response = new Response("a".repeat(65537));
+  await assert.rejects(() => provider(request), /exceeds limit/);
+});
 import {
   proposeScenario,
   suggestedFailures,

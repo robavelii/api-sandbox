@@ -55,6 +55,8 @@ export default function ScenarioEditor({
     [selected, setSelected] = useState(""),
     [source, setSource] = useState(""),
     [proposals, setProposals] = useState<any[]>([]),
+    [prompt, setPrompt] = useState(""),
+    [proposalNotice, setProposalNotice] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const version = versions.find((v) => v.id === selected);
@@ -68,6 +70,8 @@ export default function ScenarioEditor({
     let active = true;
     setVersions([]);
     setProposals([]);
+    setPrompt("");
+    setProposalNotice("");
     setSource("");
     setError("");
     api(`/sandboxes/${boxId}/versions`)
@@ -207,6 +211,39 @@ export default function ScenarioEditor({
           save a draft, and approve it before activation.
         </p>
       )}
+      <form
+        className="scenario-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          run(async () => {
+            const proposal = await api(`/sandboxes/${boxId}/proposals`, {
+              prompt,
+            });
+            setSource(JSON.stringify(proposal.definition, null, 2));
+            setProposalNotice(
+              `AI-inferred draft. Declared operations: ${proposal.evidence.join(", ") || "none"}. Review, save and approve before activation.`,
+            );
+          });
+        }}
+      >
+        <label htmlFor="proposal-prompt">Describe a test scenario</label>
+        <input
+          id="proposal-prompt"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          maxLength={2000}
+          required
+        />
+        <button className="button light" disabled={busy}>
+          Generate AI draft
+        </button>
+      </form>
+      <p>
+        AI generation sends the scenario request and imported contract to the
+        configured model provider. Limited to 100 requests per workspace per
+        month; failed attempts count.
+      </p>
+      {proposalNotice && <p role="status">{proposalNotice}</p>}
       <label className="editor-label" htmlFor="definition">
         Typed scenario definition
       </label>
