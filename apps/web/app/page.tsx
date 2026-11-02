@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
+import AccountSecurity from "./account-security";
 import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
@@ -226,6 +227,12 @@ export default function Home() {
           <span className="local-badge">Foundation preview</span>
         </header>
         <div className="content">
+          <AccountSecurity
+            onSignedOut={() => {
+              setRegister(false);
+              setUser(null);
+            }}
+          />
           <div className="heading">
             <div>
               <div className="eyebrow">YOUR SIMULATION WORKSPACE</div>

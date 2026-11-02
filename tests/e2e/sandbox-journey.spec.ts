@@ -174,4 +174,21 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
+  await page.getByText("Account security", { exact: true }).click();
+  await page.getByRole("button", { name: "Sign out other devices" }).click();
+  await expect(
+    page.getByText("Other devices have been signed out.", { exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Current password").fill("integration-password");
+  await page.getByLabel("New password").fill("updated-integration-password");
+  await page
+    .getByRole("button", { name: "Change password", exact: true })
+    .click();
+  await expect(
+    page.getByText("Password updated. Other devices have been signed out."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Sign out everywhere" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeVisible();
 });

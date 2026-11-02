@@ -853,6 +853,90 @@ test(
       ).status,
       429,
     );
+    const device = await request("/api/auth/login", "POST", {
+      email: "one@example.com",
+      password: "long-test-password",
+    });
+    assert.equal(device.status, 200);
+    assert.equal(
+      (await request("/api/auth/logout-others", "POST", {}, auth)).status,
+      200,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, device.cookie)).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, other)).status,
+      200,
+    );
+    const wrongPassword = await request(
+      "/api/auth/password",
+      "POST",
+      { currentPassword: "incorrect", newPassword: "new-long-test-password" },
+      auth,
+    );
+    assert.equal(wrongPassword.status, 401);
+    assert.equal(
+      (await request("/api/me", "GET", undefined, auth)).status,
+      200,
+    );
+    const competingChanges = await Promise.all(
+      Array.from({ length: 2 }, () =>
+        request(
+          "/api/auth/password",
+          "POST",
+          {
+            currentPassword: "long-test-password",
+            newPassword: "new-long-test-password",
+          },
+          auth,
+        ),
+      ),
+    );
+    assert.deepEqual(competingChanges.map((r) => r.status).sort(), [200, 401]);
+    const change = competingChanges.find((r) => r.status === 200)!;
+    assert.equal(change.status, 200);
+    assert.ok(change.cookie.startsWith("st_session="));
+    assert.notEqual(change.cookie, auth);
+    assert.equal(
+      (await request("/api/me", "GET", undefined, auth)).status,
+      401,
+    );
+    assert.equal(
+      (
+        await request("/api/auth/login", "POST", {
+          email: "one@example.com",
+          password: "long-test-password",
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, change.cookie)).status,
+      200,
+    );
+    const freshLogin = await request("/api/auth/login", "POST", {
+      email: "one@example.com",
+      password: "new-long-test-password",
+    });
+    assert.equal(freshLogin.status, 200);
+    assert.equal(
+      (await request("/api/auth/logout-all", "POST", {}, change.cookie)).status,
+      200,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, freshLogin.cookie)).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, change.cookie)).status,
+      401,
+    );
+    assert.equal(
+      (await request("/api/me", "GET", undefined, other)).status,
+      200,
+    );
     await request("/api/auth/logout", "POST", {}, auth);
     assert.equal(
       (await request("/api/me", "GET", undefined, auth)).status,
