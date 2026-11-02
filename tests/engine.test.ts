@@ -66,3 +66,105 @@ test("JSON/YAML support, duplicate keys, version rejection, unresolved reference
     ),
   );
 });
+
+test("contract import rejects unsafe regular expressions and bounded-complexity violations", () => {
+  const withRequestSchema = (schema: Record<string, unknown>) => ({
+    openapi: "3.1.0",
+    paths: {
+      "/items": {
+        post: {
+          requestBody: {
+            content: { "application/json": { schema } },
+          },
+          responses: { 201: { description: "Created" } },
+        },
+      },
+    },
+  });
+
+  const started = performance.now();
+  assert.throws(
+    () => compile(withRequestSchema({ type: "string", pattern: "^(a+)+$" })),
+    /Regular-expression schema keywords/,
+  );
+  assert.ok(performance.now() - started < 100);
+  assert.throws(
+    () =>
+      compile(
+        withRequestSchema({
+          type: "object",
+          patternProperties: { ".*": { type: "string" } },
+        }),
+      ),
+    /Regular-expression schema keywords/,
+  );
+  assert.throws(
+    () =>
+      compile(
+        withRequestSchema({
+          type: "object",
+          properties: Object.fromEntries(
+            Array.from({ length: 101 }, (_, index) => [
+              `field_${index}`,
+              { type: "string" },
+            ]),
+          ),
+        }),
+      ),
+    /at most 100 properties/,
+  );
+  assert.throws(
+    () =>
+      compile(
+        withRequestSchema({
+          type: "array",
+          minItems: 21,
+          items: { type: "string" },
+        }),
+      ),
+    /minItems cannot exceed 20/,
+  );
+});
+
+test("schema safety rejects recursive references, excessive depth, and prototype keys", () => {
+  const response = (schema: Record<string, unknown>) => ({
+    openapi: "3.1.0",
+    components: { schemas: { Root: schema } },
+    paths: {
+      "/items": {
+        get: {
+          responses: {
+            200: {
+              description: "OK",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/Root" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.throws(
+    () =>
+      compile(
+        response({
+          type: "object",
+          properties: { child: { $ref: "#/components/schemas/Root" } },
+        }),
+      ),
+    /Recursive schema references/,
+  );
+
+  let nested: Record<string, unknown> = { type: "string" };
+  for (let index = 0; index < 22; index++)
+    nested = { type: "object", properties: { child: nested } };
+  assert.throws(() => compile(response(nested)), /maximum depth/);
+
+  const polluted = JSON.parse(
+    '{"type":"object","properties":{"__proto__":{"type":"string"}}}',
+  );
+  assert.throws(() => compile(response(polluted)), /reserved property name/);
+});

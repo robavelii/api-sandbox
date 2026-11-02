@@ -1,5 +1,7 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv";
 import { parseDocument } from "yaml";
+import { assertSafeSchema, schemaKey } from "./schema-safety.js";
 export type Behavior =
   | "create"
   | "list"
@@ -41,12 +43,33 @@ const ajv = new Ajv2020({
   strict: false,
   allErrors: true,
   validateFormats: false,
+  loopEnum: 100,
+  loopRequired: 100,
 });
+const validators = new Map<string, ValidateFunction>();
+const validatorLimit = 256;
+
+function validatorFor(schema: Schema): ValidateFunction {
+  assertSafeSchema(schema);
+  const key = schemaKey(schema);
+  const cached = validators.get(key);
+  if (cached) {
+    validators.delete(key);
+    validators.set(key, cached);
+    return cached;
+  }
+  const compiled = ajv.compile(schema);
+  validators.set(key, compiled);
+  if (validators.size > validatorLimit)
+    validators.delete(validators.keys().next().value!);
+  return compiled;
+}
+
 function schemaFor(schema: Schema | undefined, spec: any): Schema | undefined {
   if (!schema) return undefined;
   const root = { ...schema, components: spec.components || {} };
   // Compilation rejects unresolved/external references; no network resolution is performed.
-  ajv.compile(root);
+  validatorFor(root);
   return root;
 }
 export function compile(spec: any): Contract {
@@ -153,7 +176,7 @@ export function validate(
   value: unknown,
 ): string | null {
   if (!schema) return null;
-  const check = ajv.compile(schema);
+  const check = validatorFor(schema);
   return check(value) ? null : ajv.errorsText(check.errors);
 }
 export function deterministicId(resource: string, counter: number): string {
