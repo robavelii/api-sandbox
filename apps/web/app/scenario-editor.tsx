@@ -1,0 +1,250 @@
+"use client";
+import { useEffect, useState } from "react";
+type Version = {
+  id: string;
+  number: number;
+  approved_at: string | null;
+  definition: any;
+};
+async function api(path: string, data?: unknown) {
+  const r = await fetch("/api" + path, {
+    method: data === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json" },
+    ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+  });
+  const result = await r.json();
+  if (!r.ok) throw new Error(result.error || "Request failed");
+  return result;
+}
+export default function ScenarioEditor({
+  boxId,
+  sid,
+  versionId,
+  clock,
+  operationIds,
+  onChange,
+}: {
+  boxId: string;
+  sid: string;
+  versionId: string;
+  clock: string;
+  operationIds: string[];
+  onChange: () => Promise<void>;
+}) {
+  const [versions, setVersions] = useState<Version[]>([]),
+    [selected, setSelected] = useState(""),
+    [source, setSource] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const version = versions.find((v) => v.id === selected);
+  async function load() {
+    const rows = await api(`/sandboxes/${boxId}/versions`);
+    setVersions(rows);
+    return rows as Version[];
+  }
+  useEffect(() => {
+    let active = true;
+    setVersions([]);
+    setSource("");
+    setError("");
+    api(`/sandboxes/${boxId}/versions`)
+      .then((rows) => {
+        if (active) {
+          setVersions(rows);
+          const v = rows.find((v: Version) => v.id === versionId) || rows[0];
+          setSelected(v?.id || "");
+          setSource(JSON.stringify(v?.definition || {}, null, 2));
+        }
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [boxId, versionId]);
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="panel scenario-editor" id="scenarios">
+      <div className="panel-heading">
+        <div>
+          <div className="eyebrow muted">REPRODUCIBLE BEHAVIOR</div>
+          <h3>Scenario versions</h3>
+        </div>
+        <span className="pill green">
+          Session pinned to v
+          {versions.find((v) => v.id === versionId)?.number || "…"}
+        </span>
+      </div>
+      <p>
+        Saving creates a new draft. Review and approve it, then select it for
+        this session. Switching versions resets this session’s state.
+      </p>
+      <div className="scenario-toolbar">
+        <select
+          aria-label="Scenario version to review"
+          value={selected}
+          onChange={(e) => {
+            setSelected(e.target.value);
+            setSource(
+              JSON.stringify(
+                versions.find((v) => v.id === e.target.value)?.definition,
+                null,
+                2,
+              ),
+            );
+          }}
+        >
+          {versions.map((v) => (
+            <option key={v.id} value={v.id}>
+              v{v.number} · {v.definition.name} ·{" "}
+              {v.approved_at ? "approved" : "draft"}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={busy}
+          className="button light"
+          onClick={() => {
+            const op =
+              operationIds.find(
+                (id) => id.startsWith("POST ") && !id.includes("{"),
+              ) || operationIds[0];
+            setSource(
+              JSON.stringify(
+                {
+                  version: 1,
+                  name: "Three failures then success",
+                  seed: "test-seed",
+                  clock: "2026-06-01T12:00:00.000Z",
+                  idempotency: "replay",
+                  rules: [
+                    {
+                      operation: op,
+                      times: 3,
+                      failure: { phase: "before", status: 429 },
+                    },
+                  ],
+                },
+                null,
+                2,
+              ),
+            );
+          }}
+        >
+          Load retry example
+        </button>
+      </div>
+      <label className="editor-label" htmlFor="definition">
+        Typed scenario definition
+      </label>
+      <textarea
+        id="definition"
+        value={source}
+        onChange={(e) => setSource(e.target.value)}
+        spellCheck={false}
+      />
+      {error && (
+        <p role="alert" className="editor-error">
+          {error}
+        </p>
+      )}
+      <div className="scenario-toolbar">
+        <button
+          disabled={busy || !source}
+          className="button primary"
+          onClick={() =>
+            run(async () => {
+              const created = await api(
+                `/sandboxes/${boxId}/versions`,
+                JSON.parse(source),
+              );
+              await load();
+              setSelected(created.id);
+              setSource(JSON.stringify(created.definition, null, 2));
+            })
+          }
+        >
+          Save as new draft
+        </button>
+        <button
+          disabled={
+            busy ||
+            !version ||
+            !!version.approved_at ||
+            source !== JSON.stringify(version.definition, null, 2)
+          }
+          className="button light"
+          onClick={() =>
+            run(async () => {
+              await api(`/sandboxes/${boxId}/versions/${selected}/approve`, {});
+              await load();
+            })
+          }
+        >
+          Approve saved definition
+        </button>
+        <button
+          disabled={
+            busy ||
+            !sid ||
+            !version?.approved_at ||
+            source !== JSON.stringify(version.definition, null, 2)
+          }
+          className="button light"
+          onClick={() =>
+            run(async () => {
+              if (
+                confirm(
+                  "Use this approved version and delete resources, logs, and retry history in the selected session?",
+                )
+              ) {
+                await api(`/sandboxes/${boxId}/sessions/${sid}/configure`, {
+                  versionId: selected,
+                });
+                await onChange();
+              }
+            })
+          }
+        >
+          Use version & reset session
+        </button>
+      </div>
+      <div className="scenario-note">
+        Idempotency policy: {version?.definition.idempotency || "—"}. Send
+        Idempotency-Key on mutation requests. Review the saved JSON before
+        approval; edited text must be saved as a new draft.
+      </div>
+      <div className="scenario-toolbar">
+        <span>
+          Session clock:{" "}
+          <code>{clock ? new Date(clock).toISOString() : "—"}</code>
+        </span>
+        <button
+          className="text-button"
+          disabled={busy || !sid}
+          onClick={() =>
+            run(async () => {
+              await api(`/sandboxes/${boxId}/sessions/${sid}/clock`, {
+                advanceMs: 1000,
+              });
+              await onChange();
+            })
+          }
+        >
+          Advance 1 second
+        </button>
+      </div>
+    </section>
+  );
+}

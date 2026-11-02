@@ -18,6 +18,7 @@ test(
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     await pool.query(await readFile("migrations/001_foundation.sql", "utf8"));
+    await pool.query(await readFile("migrations/002_scenarios.sql", "utf8"));
     const app = await createApp(pool);
     t.after(async () => {
       await app.close();
@@ -62,6 +63,28 @@ test(
     const spec = JSON.parse(
       await readFile("apps/web/public/payments.json", "utf8"),
     );
+    const responseSchema = {
+      type: "object",
+      required: ["id", "amount", "currency", "status", "created_at"],
+      properties: {
+        id: { type: "string" },
+        amount: { type: "integer" },
+        currency: { type: "string" },
+        status: {
+          type: "string",
+          enum: ["processing", "succeeded"],
+          default: "processing",
+        },
+        created_at: { type: "string", format: "date-time" },
+        label: { type: "string" },
+      },
+    };
+    spec.paths["/payments"].post.responses["201"].content = {
+      "application/json": { schema: responseSchema },
+    };
+    spec.paths["/payments/{id}/capture"].post.responses["200"].content = {
+      "application/json": { schema: responseSchema },
+    };
     const created = await request(
       "/api/sandboxes",
       "POST",
@@ -207,6 +230,267 @@ test(
       ).status,
       501,
     );
+    const configuration = {
+      version: 1,
+      name: "Retry and capture",
+      seed: "integration-test",
+      clock: "2026-06-01T12:00:00.000Z",
+      idempotency: "replay",
+      rules: [
+        {
+          operation: "POST /payments",
+          times: 3,
+          failure: { phase: "before", status: 429 },
+        },
+        {
+          operation: "POST /payments/{id}/capture",
+          action: {
+            type: "transition",
+            field: "status",
+            from: ["processing"],
+            to: "succeeded",
+          },
+          failure: { phase: "after", status: 503 },
+        },
+      ],
+    };
+    const draft = await request(
+      `/api/sandboxes/${id}/versions`,
+      "POST",
+      configuration,
+      auth,
+    );
+    assert.equal(draft.status, 201);
+    assert.equal(
+      (await request(`/api/sandboxes/${id}/versions`, "GET", undefined, other))
+        .status,
+      404,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/sessions/${sessionId}/configure`,
+          "POST",
+          { versionId: draft.data.id },
+          auth,
+        )
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/versions`,
+          "POST",
+          { ...configuration, rules: [{ operation: "POST /invented" }] },
+          auth,
+        )
+      ).status,
+      400,
+    );
+    await request(
+      `/api/sandboxes/${id}/versions/${draft.data.id}/approve`,
+      "POST",
+      {},
+      auth,
+    );
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/sessions/${sessionId}/configure`,
+          "POST",
+          { versionId: draft.data.id },
+          auth,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await request(`/api/sandboxes/${id}/sessions`, "GET", undefined, auth)
+      ).data.find((s: any) => s.name === "ci").version_id,
+      id,
+    );
+    await assert.rejects(
+      () =>
+        pool.query(
+          'UPDATE sandbox_versions SET definition=definition || \'{"name":"mutated"}\'::jsonb WHERE id=$1',
+          [draft.data.id],
+        ),
+      /immutable/,
+    );
+    async function send(
+      url: string,
+      method: any = "GET",
+      body?: any,
+      key?: string,
+    ) {
+      const result = await f.inject({
+        url: p + url,
+        method,
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+        ...(body === undefined ? {} : { payload: body }),
+      });
+      return {
+        status: result.statusCode,
+        data: result.body ? JSON.parse(result.body) : null,
+      };
+    }
+    for (let i = 0; i < 3; i++)
+      assert.equal(
+        (
+          await send(
+            "/payments",
+            "POST",
+            { amount: 1, currency: "USD" },
+            "create",
+          )
+        ).status,
+        429,
+      );
+    const generated = await send(
+      "/payments",
+      "POST",
+      { amount: 1, currency: "USD" },
+      "create",
+    );
+    assert.equal(generated.status, 201);
+    assert.equal(generated.data.created_at, configuration.clock);
+    assert.equal(generated.data.status, "processing");
+    const duplicates = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        send("/payments", "POST", { currency: "USD", amount: 1 }, "create"),
+      ),
+    );
+    assert.ok(
+      duplicates.every(
+        (d) =>
+          d.status === 201 &&
+          JSON.stringify(d.data) === JSON.stringify(generated.data),
+      ),
+    );
+    assert.equal((await send("/payments")).data.length, 1);
+    assert.equal(
+      (
+        await send(
+          "/payments",
+          "POST",
+          { amount: 2, currency: "USD" },
+          "create",
+        )
+      ).status,
+      409,
+    );
+    assert.equal(
+      (await send("/payments/pay_000001/capture", "POST", {}, "capture"))
+        .status,
+      503,
+    );
+    assert.equal((await send("/payments/pay_000001")).data.status, "succeeded");
+    assert.equal(
+      (await send("/payments/pay_000001/capture", "POST", {}, "capture"))
+        .status,
+      503,
+    );
+    assert.equal(
+      (await send("/payments/pay_000001/capture", "POST", {})).status,
+      409,
+    );
+    await request(
+      `/api/sandboxes/${id}/sessions/${sessionId}/clock`,
+      "POST",
+      { advanceMs: 1000 },
+      auth,
+    );
+    const later = await send("/payments", "POST", {
+      amount: 2,
+      currency: "USD",
+    });
+    assert.equal(later.data.created_at, "2026-06-01T12:00:01.000Z");
+    assert.equal(
+      (
+        await request(
+          `/api/sandboxes/${id}/sessions/${sessionId}/clock`,
+          "POST",
+          { advanceMs: -1 },
+          auth,
+        )
+      ).status,
+      400,
+    );
+    await request(
+      `/api/sandboxes/${id}/sessions/${sessionId}/reset`,
+      "POST",
+      {},
+      auth,
+    );
+    for (let i = 0; i < 3; i++)
+      assert.equal(
+        (
+          await send(
+            "/payments",
+            "POST",
+            { amount: 1, currency: "USD" },
+            "create",
+          )
+        ).status,
+        429,
+      );
+    assert.deepEqual(
+      (
+        await send(
+          "/payments",
+          "POST",
+          { amount: 1, currency: "USD" },
+          "create",
+        )
+      ).data,
+      generated.data,
+    );
+    const conflict = await request(
+      `/api/sandboxes/${id}/versions`,
+      "POST",
+      {
+        ...configuration,
+        name: "Conflict policy",
+        idempotency: "conflict",
+        rules: [],
+      },
+      auth,
+    );
+    await request(
+      `/api/sandboxes/${id}/versions/${conflict.data.id}/approve`,
+      "POST",
+      {},
+      auth,
+    );
+    await request(
+      `/api/sandboxes/${id}/sessions/${sessionId}/configure`,
+      "POST",
+      { versionId: conflict.data.id },
+      auth,
+    );
+    assert.equal(
+      (await send("/payments", "POST", { amount: 1, currency: "USD" }, "same"))
+        .status,
+      201,
+    );
+    assert.equal(
+      (await send("/payments", "POST", { amount: 1, currency: "USD" }, "same"))
+        .status,
+      409,
+    );
+    const trace = await request(
+      `/api/sandboxes/${id}/sessions/${sessionId}/logs`,
+      "GET",
+      undefined,
+      auth,
+    );
+    assert.equal(trace.data[0].version_id, conflict.data.id);
+    assert.ok(trace.data[0].simulated_at);
     const rotated = await request(`/api/sandboxes/${id}/key`, "POST", {}, auth);
     assert.equal(
       (await request(p + "/payments", "GET", undefined, "", apiKey)).status,

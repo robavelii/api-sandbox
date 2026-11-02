@@ -32,6 +32,33 @@ curl "$BASE_URL/payments/pay_000001" -H "Authorization: Bearer $SANDBOX_KEY"
 
 `BASE_URL` is the endpoint shown in the dashboard. Add `X-SpecTwin-Session: ci` after creating a session called `ci` to isolate its state. Reset deletes resources/logs and resets the ID sequence. Rotating a key revokes the prior key immediately.
 
+## Scenario versions
+
+The scenario editor saves immutable definitions. A saved version remains a draft until it is explicitly approved. Selecting an approved version for a session resets that session and pins its resources, logs, rule counters, idempotency history, seed, and controlled clock to the selected version.
+
+Definitions use a bounded JSON format rather than executable code:
+
+```json
+{
+  "version": 1,
+  "name": "Three failures then success",
+  "seed": "checkout-ci",
+  "clock": "2026-06-01T12:00:00.000Z",
+  "idempotency": "replay",
+  "rules": [
+    {
+      "operation": "POST /payments",
+      "times": 3,
+      "failure": { "phase": "before", "status": 429 }
+    }
+  ]
+}
+```
+
+Rules may add a delay of up to five seconds, inject a bounded HTTP failure before or after mutation, or transition one declared item field from an allowed source value to a target value. `times` limits how often a rule applies after each reset. Mutation requests may send an `Idempotency-Key` of 1–128 characters. The `replay` policy returns the saved outcome for an identical request, `conflict` rejects every reused key, and `off` disables idempotency storage. Keys are hashed before storage.
+
+The controlled clock starts at the version's `clock` value and can be advanced through the dashboard. Schema-generated dates use that clock, and generated values use the saved seed. Reset restores the clock, rule counts, deterministic ID sequence, and idempotency history so an identical request sequence produces the same result.
+
 ## Validation
 
 ```sh
@@ -45,7 +72,7 @@ The integration suite is enabled by `TEST_DATABASE_URL`. It **drops and recreate
 
 ## Behavior and boundaries
 
-The compiler accepts OpenAPI 3.0/3.1 JSON and YAML, validates inline/local-reference JSON request and response schemas, and never fetches external references. Only declared routes execute. Simple collection/item patterns receive inferred CRUD mappings; users must explicitly approve activation. Unconfigured custom actions return 501. Missing fields in declared response schemas prevent mutation with 422 rather than silently emitting incompatible resources. This release does not generate missing response fields or pagination envelopes.
+The compiler accepts OpenAPI 3.0/3.1 JSON and YAML, validates inline/local-reference JSON request and response schemas, and never fetches external references. Only declared routes execute. Simple collection/item patterns receive inferred CRUD mappings; users must explicitly approve activation. Custom item actions require an approved transition rule or return 501. Bounded deterministic response generation supports common scalar, object, array, enum, composition, format, example, default, and local-reference shapes. Unsupported constraints fail with 422 before mutation. Pagination envelopes and arbitrary scripts are not supported.
 
 The API stores hashed authentication sessions and sandbox keys. Platform sessions use HttpOnly, SameSite cookies (Secure in production). Every control-plane lookup checks organization membership; runtime keys scope to a sandbox. PostgreSQL transactions lock sessions to serialize concurrent updates, and quotas update atomically. Request logs contain paths and execution metadata, excluding bodies and authorization headers. Avoid sensitive values in URL paths.
 
