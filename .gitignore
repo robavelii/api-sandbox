@@ -6,4 +6,5 @@ dist/
 !.env.example
 *.tsbuildinfo
 coverage/
+reports/
 data/

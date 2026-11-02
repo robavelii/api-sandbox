@@ -16,7 +16,14 @@
     "build": "npm run build -w @spectwin/engine && npm run build -w @spectwin/api && npm run build -w @spectwin/web",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:unit": "node --import tsx --test tests/engine.test.ts tests/scenario.test.ts",
+    "test:unit:coverage": "c8 --all --src packages/engine/src --reports-dir reports/unit-coverage --reporter=text-summary --reporter=lcov --check-coverage --lines=90 --statements=90 --functions=100 --branches=70 node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/unit-junit.xml tests/engine.test.ts tests/scenario.test.ts",
+    "test:integration": "node --import tsx --test tests/api.test.ts",
+    "test:integration:coverage": "c8 --all --src apps/api/src --src packages/engine/src --reports-dir reports/integration-coverage --reporter=text-summary --reporter=lcov --check-coverage --lines=85 --statements=85 --functions=90 --branches=65 node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/integration-junit.xml tests/api.test.ts",
+    "test:migrations": "node --import tsx --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/migrations-junit.xml tests/migrations.test.ts",
     "migrate": "node --import tsx scripts/migrate.ts",
+    "ci:audit": "node --import tsx scripts/audit-dependencies.ts",
+    "ci:validate": "node --import tsx scripts/validate-workflows.ts",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },
@@ -26,6 +33,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.5",
+    "c8": "^10.1.3",
     "prettier": "^3.9.10",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"

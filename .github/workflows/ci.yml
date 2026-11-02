@@ -1,12 +1,67 @@
 name: CI
+
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
+env:
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+
 jobs:
-  test:
+  quality:
+    name: Static quality
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run ci:validate
+      - run: npm run format:check
+      - run: npm run typecheck
+
+  unit:
+    name: Unit tests and engine coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: mkdir -p reports
+      - run: npm run test:unit:coverage
+      - name: Upload unit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-test-reports
+          path: |
+            reports/unit-junit.xml
+            reports/unit-coverage
+          if-no-files-found: error
+          retention-days: 14
+
+  integration:
+    name: PostgreSQL integration and migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17-alpine
@@ -22,15 +77,64 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql://spectwin:test-only@localhost:5432/spectwin_test
-      NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run format:check
-      - run: npm run typecheck
-      - run: npm test
+      - run: mkdir -p reports
+      - run: npm run test:migrations
+      - run: npm run test:integration:coverage
+      - name: Upload integration reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: integration-test-reports
+          path: |
+            reports/migrations-junit.xml
+            reports/integration-junit.xml
+            reports/integration-coverage
+          if-no-files-found: error
+          retention-days: 14
+
+  security:
+    name: Dependency security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NPM_CONFIG_AUDIT: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: mkdir -p reports
+      - run: npm run ci:audit
+      - name: Reject critical findings in all dependencies
+        run: npm audit --audit-level=critical --json > reports/all-dependencies-audit.json
+      - name: Upload dependency reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-audit-reports
+          path: reports/*audit*
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    name: Production builds
+    needs: [quality, unit, integration, security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: npm run build
