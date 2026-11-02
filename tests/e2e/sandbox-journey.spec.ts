@@ -174,6 +174,15 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
+  await page.getByText("Workspace members", { exact: true }).click();
+  await page.getByRole("button", { name: "Load members", exact: true }).click();
+  const ownRole = page.locator("#workspace-members select");
+  await expect(ownRole).toHaveValue("owner");
+  await ownRole.selectOption("member");
+  await expect(
+    page.locator("#workspace-members").getByRole("alert"),
+  ).toContainText("at least one owner");
+  await expect(ownRole).toHaveValue("owner");
   await expect(
     page.getByLabel("Active workspace").locator("option"),
   ).toContainText("My workspace");

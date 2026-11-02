@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
 import AccountSecurity from "./account-security";
 import WorkspacePicker from "./workspace-picker";
+import WorkspaceMembers from "./workspace-members";
 import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
@@ -229,6 +230,9 @@ export default function Home() {
         </header>
         <div className="content">
           <WorkspacePicker currentId={user.organization_id} />
+          {user.role === "owner" && (
+            <WorkspaceMembers currentUserId={user.id} />
+          )}
           <AccountSecurity
             onSignedOut={() => {
               setRegister(false);

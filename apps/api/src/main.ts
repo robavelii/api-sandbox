@@ -289,6 +289,74 @@ export async function createApp(
       )
     ).rows;
   });
+  f.get("/api/workspaces/members", async (req: any) => {
+    const user = await actor(req);
+    if (user.role !== "owner")
+      throw new Problem(403, "Workspace owner access required.");
+    return (
+      await pool.query(
+        "SELECT u.id,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.organization_id=$1 ORDER BY u.email",
+        [user.organization_id],
+      )
+    ).rows;
+  });
+  for (const action of ["role", "remove"] as const) {
+    f.post(`/api/workspaces/members/:uid/${action}`, async (req: any) => {
+      const user = await actor(req);
+      const role = action === "role" ? req.body?.role : null;
+      if (action === "role" && !["owner", "member"].includes(role))
+        throw new Problem(400, "Role must be owner or member.");
+      await tx(async (client) => {
+        // All membership mutations take the same workspace lock, including
+        // authorization rechecks and the last-owner invariant.
+        await client.query(
+          "SELECT id FROM organizations WHERE id=$1 FOR UPDATE",
+          [user.organization_id],
+        );
+        const caller = (
+          await client.query(
+            "SELECT role FROM memberships WHERE user_id=$1 AND organization_id=$2",
+            [user.id, user.organization_id],
+          )
+        ).rows[0];
+        if (caller?.role !== "owner")
+          throw new Problem(403, "Workspace owner access required.");
+        const target = (
+          await client.query(
+            "SELECT role FROM memberships WHERE user_id=$1 AND organization_id=$2",
+            [req.params.uid, user.organization_id],
+          )
+        ).rows[0];
+        if (!target) throw new Problem(404, "Member not found.");
+        if (target.role === "owner" && role !== "owner") {
+          const count = Number(
+            (
+              await client.query(
+                "SELECT count(*) FROM memberships WHERE organization_id=$1 AND role='owner'",
+                [user.organization_id],
+              )
+            ).rows[0].count,
+          );
+          if (count <= 1)
+            throw new Problem(
+              409,
+              "A workspace must retain at least one owner.",
+            );
+        }
+        if (action === "remove")
+          await client.query(
+            "DELETE FROM memberships WHERE user_id=$1 AND organization_id=$2",
+            [req.params.uid, user.organization_id],
+          );
+        else
+          await client.query(
+            "UPDATE memberships SET role=$1 WHERE user_id=$2 AND organization_id=$3",
+            [role, req.params.uid, user.organization_id],
+          );
+      });
+      return { ok: true };
+    });
+  }
   f.post("/api/workspaces/select", async (req: any, reply: any) => {
     const user = await actor(req, true);
     const id = required(req.body?.workspaceId);
