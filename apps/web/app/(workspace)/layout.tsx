@@ -4,6 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { LogOut, Menu, Plus, Settings, X } from "lucide-react";
 import WorkspacePicker from "../workspace-picker";
+import ThemeSelect from "../theme-select";
 import { api, type Box } from "../lib/api";
 import { WorkspaceContext } from "./workspace-context";
 
@@ -129,6 +130,7 @@ export default function WorkspaceLayout({
               <Settings aria-hidden size={16} />
               Settings
             </Link>
+            <ThemeSelect />
             <p className="side-user" title={user.email}>
               {user.email}
             </p>
