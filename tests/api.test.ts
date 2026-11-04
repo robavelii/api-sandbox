@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { createApp } from "../apps/api/src/main.js";
 import { hashPassword, verifyPassword } from "../apps/api/src/auth.js";
 import { deliverOne, fanoutOne } from "../apps/worker/src/worker.js";
+import { signWebhook } from "../packages/engine/src/webhook-crypto.js";
 test("password hashing uses distinct salts and rejects incorrect passwords", async () => {
   const a = await hashPassword("long-test-password");
   const b = await hashPassword("long-test-password");
@@ -30,6 +31,10 @@ test(
     await pool.query(
       await readFile("migrations/006_workspace_invitations.sql", "utf8"),
     );
+    await pool.query(
+      await readFile("migrations/007_account_recovery.sql", "utf8"),
+    );
+    await pool.query(await readFile("migrations/008_audit_events.sql", "utf8"));
     let verificationCode = "";
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
@@ -833,6 +838,7 @@ test(
       1,
     );
     const sent: { headers: Record<string, string>; body: string }[] = [];
+    const attemptAt = new Date(Date.now() + 1000);
     let response = 500;
     const sender = async (
       _url: URL,
@@ -848,6 +854,7 @@ test(
         encryptionKey,
         resolver: publicResolver,
         sender,
+        now: () => attemptAt,
       }),
       true,
     );
@@ -856,6 +863,14 @@ test(
     assert.equal(delivery.status, "pending");
     assert.equal(delivery.attempts, 1);
     assert.match(sent[0].headers["x-spectwin-signature"], /^v1=[a-f0-9]{64}$/);
+    assert.equal(
+      sent[0].headers["x-spectwin-timestamp"],
+      attemptAt.toISOString(),
+    );
+    assert.equal(
+      sent[0].headers["x-spectwin-signature"],
+      `v1=${signWebhook(endpoint.data.signingSecret, attemptAt.toISOString(), sent[0].body)}`,
+    );
     assert.equal(JSON.parse(sent[0].body).type, "payment.succeeded");
     await pool.query(
       "UPDATE webhook_deliveries SET next_attempt_at=now()-interval '1 second'",
@@ -966,6 +981,38 @@ test(
     ).rows[0];
     assert.equal(exhausted.status, "failed");
     assert.equal(exhausted.attempts, 5);
+    for (const action of ["reset", "configure"]) {
+      await pool.query(
+        "UPDATE webhook_events SET fanout_at=NULL,available_at=now()-interval '1 second'",
+      );
+      await pool.query(
+        "UPDATE webhook_deliveries SET status='pending',next_attempt_at=now()-interval '1 second'",
+      );
+      const cancelled = await request(
+        `/api/sandboxes/${id}/sessions/${sessionId}/${action}`,
+        "POST",
+        action === "configure" ? { versionId: webhookVersion.data.id } : {},
+        auth,
+      );
+      assert.equal(cancelled.status, 200);
+      assert.equal(await fanoutOne(pool), false);
+      assert.equal(
+        await deliverOne(pool, {
+          encryptionKey,
+          resolver: publicResolver,
+          sender,
+        }),
+        false,
+      );
+      const cancelledDelivery = (
+        await pool.query("SELECT status,last_error FROM webhook_deliveries")
+      ).rows[0];
+      assert.equal(cancelledDelivery.status, "failed");
+      assert.equal(
+        cancelledDelivery.last_error,
+        "Session reset or reconfigured",
+      );
+    }
     assert.equal(
       (
         await request(
@@ -1002,6 +1049,27 @@ test(
     await pool.query("UPDATE organizations SET request_limit=0 WHERE id=$1", [
       first.data.organization_id,
     ]);
+    const beforeDenials = (
+      await pool.query(
+        "SELECT (SELECT requests FROM monthly_usage WHERE organization_id=$1) AS usage,(SELECT count(*) FROM request_logs WHERE session_id=$2) AS logs",
+        [first.data.organization_id, sessionId],
+      )
+    ).rows[0];
+    const denials = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        request(p + "/payments", "GET", undefined, "", rotated.data.apiKey),
+      ),
+    );
+    assert.ok(denials.every((result) => result.status === 429));
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT (SELECT requests FROM monthly_usage WHERE organization_id=$1) AS usage,(SELECT count(*) FROM request_logs WHERE session_id=$2) AS logs",
+          [first.data.organization_id, sessionId],
+        )
+      ).rows[0],
+      beforeDenials,
+    );
     assert.equal(
       (
         await request(
@@ -1015,6 +1083,52 @@ test(
       429,
     );
     const workspaceAuth = `${auth}; st_workspace=${first.data.organization_id}`;
+    const audit = await request(
+      "/api/workspaces/audit",
+      "GET",
+      undefined,
+      workspaceAuth,
+    );
+    assert.equal(audit.status, 200);
+    assert.ok(
+      audit.data.some((event: any) => event.action === "sandbox.key_rotated"),
+    );
+    const outsiderAudit = await request(
+      "/api/workspaces/audit",
+      "GET",
+      undefined,
+      other,
+    );
+    assert.equal(outsiderAudit.status, 200);
+    assert.ok(
+      outsiderAudit.data.every((event: any) => event.resource_id !== id),
+    );
+    assert.doesNotMatch(
+      JSON.stringify(audit.data),
+      new RegExp(rotated.data.apiKey),
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/audit?before=invalid",
+          "GET",
+          undefined,
+          workspaceAuth,
+        )
+      ).status,
+      400,
+    );
+    const auditPage = await request(
+      `/api/workspaces/audit?before=${audit.data[0].id}`,
+      "GET",
+      undefined,
+      workspaceAuth,
+    );
+    assert.ok(
+      auditPage.data.every(
+        (event: any) => BigInt(event.id) < BigInt(audit.data[0].id),
+      ),
+    );
     const invitation = await request(
       "/api/workspaces/invitations",
       "POST",
@@ -1170,6 +1284,11 @@ test(
     );
     assert.equal(
       (await request("/api/workspaces/members", "GET", undefined, memberAuth))
+        .status,
+      403,
+    );
+    assert.equal(
+      (await request("/api/workspaces/audit", "GET", undefined, memberAuth))
         .status,
       403,
     );

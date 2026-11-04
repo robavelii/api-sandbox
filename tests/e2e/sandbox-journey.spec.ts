@@ -6,6 +6,15 @@ test("a team can configure and replay an isolated integration journey", async ({
   browser,
 }) => {
   await page.goto("/");
+  await page.getByText("Forgot password?", { exact: true }).click();
+  await page.getByLabel("Recovery email").fill("missing@example.com");
+  await page
+    .getByRole("button", { name: "Send recovery code", exact: true })
+    .click();
+  await expect(
+    page.locator("#password-recovery").getByRole("status"),
+  ).toContainText("If this email belongs to a verified account");
+  await page.getByText("Forgot password?", { exact: true }).click();
   await page.getByRole("button", { name: "Create an account" }).click();
   await page.getByLabel("Email").fill("journey@example.com");
   await page.getByLabel("Password").fill("integration-password");
@@ -174,6 +183,16 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
+  await page.getByText("Workspace audit history", { exact: true }).click();
+  await page
+    .getByRole("button", { name: "Load audit history", exact: true })
+    .click();
+  await expect(
+    page
+      .locator("#workspace-audit")
+      .getByText("scenario.version_created", { exact: true })
+      .first(),
+  ).toBeVisible();
   await page.getByText("Workspace invitations", { exact: true }).click();
   await page.getByLabel("Invite email").fill("teammate@example.com");
   await page

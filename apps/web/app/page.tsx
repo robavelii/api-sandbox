@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
+import PasswordRecovery from "./password-recovery";
 import AccountSecurity from "./account-security";
 import WorkspacePicker from "./workspace-picker";
 import WorkspaceMembers from "./workspace-members";
+import WorkspaceAudit from "./workspace-audit";
 import WorkspaceInvitations from "./workspace-invitations";
 import PlatformKeys from "./platform-keys";
 import WebhookPanel from "./webhook-panel";
@@ -172,6 +174,7 @@ export default function Home() {
               : "Create an account"}
           </button>
         </form>
+        <PasswordRecovery />
       </div>
     );
   return (
@@ -232,6 +235,7 @@ export default function Home() {
         </header>
         <div className="content">
           <WorkspacePicker currentId={user.organization_id} />
+          {user.role === "owner" && <WorkspaceAudit />}
           <WorkspaceInvitations owner={user.role === "owner"} />
           {user.role === "owner" && <PlatformKeys />}
           {user.role === "owner" && (
