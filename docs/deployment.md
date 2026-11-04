@@ -23,9 +23,12 @@ One image built from the repository `Dockerfile` serves all four app roles. Reso
 /opt/spectwin/
   .env          secrets, owner ubuntu, mode 600, never committed
   repo.git      bare repository; push to it over SSH
-  src/          checkout used by bin/check and deploy
+  src/          checkout used by bin/check and manual deploys
+  deploy-src/   checkout used only by automatic deploys
   backups/      pg_dump before each migration, newest 14 kept
+  logs/         automatic deploy logs, newest 30 kept
   bin/check     runs the CI gates in a capped container
+  bin/deploy-main  forced command for the GitHub deploy key
 ```
 
 ## Environment file
@@ -47,12 +50,33 @@ PROPOSAL_MODEL=gpt-4.1-mini
 
 ## Rolling out
 
+Merging to `main` deploys automatically. When CI succeeds on a push to `main`, `.github/workflows/deploy.yml` (environment `staging`, restricted to `main`) connects with a dedicated SSH key and sends the commit SHA. On the server, that key's `authorized_keys` entry is `restrict,command="/opt/spectwin/bin/deploy-main"`: it allows no shell, forwarding or other commands. The forced command (`deploy/deploy-main.sh`, installed by hand) does the following:
+
+1. Fetches `main` from GitHub itself.
+2. Refuses any commit that is not on `main`.
+3. Deploys from its own checkout, `/opt/spectwin/deploy-src`.
+4. Runs `deploy/deploy.sh` detached under `/opt/spectwin/deploy.lock` and streams the log back.
+
+A cancelled or disconnected run never interrupts a migration, and overlapping deploys wait their turn. Logs are kept in `/opt/spectwin/logs` (newest 30). Run the workflow manually from the Actions tab to redeploy.
+
+| GitHub `staging` environment | Value                                                       |
+| ---------------------------- | ----------------------------------------------------------- |
+| secret `DEPLOY_SSH_KEY`      | private half of the restricted key (never stored elsewhere) |
+| secret `DEPLOY_KNOWN_HOSTS`  | the host's ed25519 key, so the runner cannot be redirected  |
+| variable `DEPLOY_TARGET`     | `ubuntu@<host>`                                             |
+
+`deploy/deploy-main.sh` changes take effect only after it is copied to `/opt/spectwin/bin/deploy-main` on the server. To revoke CI deploys, delete the `spectwin-github-deploy` line from `~ubuntu/.ssh/authorized_keys`.
+
+Manual deploy of a branch (for example before merging):
+
 ```sh
 git push oci <branch>                    # from a workstation
 ssh ubuntu@<host>
-cd /opt/spectwin/src && git fetch -q origin && git checkout --detach origin/main
+cd /opt/spectwin/src && git fetch -q origin && git checkout --detach origin/<branch>
 deploy/deploy.sh
 ```
+
+Avoid running a manual deploy while an automatic one holds the lock.
 
 The script builds `spectwin:<commit>`, backs up the database if it exists, runs migrations, waits for healthy `api`, `worker` and `web`, then installs the Caddy site. It installs the site only if `caddy validate` passes, and restores the previous file otherwise. It keeps the three newest SpecTwin images and never prunes anything else.
 
@@ -60,4 +84,4 @@ Rollback: `SPECTWIN_IMAGE_TAG=<older> docker compose --project-name spectwin -f 
 
 ## Not yet covered
 
-Off-host backups and a restore drill, monitoring and alerting, log retention beyond Caddy's rotation, a separate runtime workload, and CI-driven deploys. Configure `RESEND_API_KEY` before relying on email verification or recovery.
+Off-host backups and a restore drill, monitoring and alerting, log retention beyond Caddy's rotation, and a separate runtime workload. Configure `RESEND_API_KEY` before relying on email verification or recovery.
