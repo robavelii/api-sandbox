@@ -174,6 +174,16 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
+  await page.getByText("Workspace audit history", { exact: true }).click();
+  await page
+    .getByRole("button", { name: "Load audit history", exact: true })
+    .click();
+  await expect(
+    page
+      .locator("#workspace-audit")
+      .getByText("scenario.version_created", { exact: true })
+      .first(),
+  ).toBeVisible();
   await page.getByText("Workspace invitations", { exact: true }).click();
   await page.getByLabel("Invite email").fill("teammate@example.com");
   await page

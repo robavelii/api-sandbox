@@ -480,6 +480,25 @@ export async function createApp(
       return { workspaceId: invitation.organization_id };
     });
   });
+  f.get("/api/workspaces/audit", async (req: any) => {
+    const user = await actor(req);
+    if (user.role !== "owner")
+      throw new Problem(403, "Workspace owner access required.");
+    const before = req.query.before;
+    if (
+      before !== undefined &&
+      (typeof before !== "string" ||
+        !/^[1-9][0-9]{0,18}$/.test(before) ||
+        BigInt(before) > 9223372036854775807n)
+    )
+      throw new Problem(400, "Invalid audit cursor.");
+    return (
+      await pool.query(
+        "SELECT id,action,resource_id,metadata,created_at FROM audit_events WHERE organization_id=$1 AND ($2::bigint IS NULL OR id<$2) ORDER BY id DESC LIMIT 100",
+        [user.organization_id, before || null],
+      )
+    ).rows;
+  });
   f.get("/api/workspaces/members", async (req: any) => {
     const user = await actor(req);
     if (user.role !== "owner")
