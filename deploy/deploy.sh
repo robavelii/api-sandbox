@@ -42,10 +42,11 @@ echo "== starting"
 "${COMPOSE[@]}" up -d --wait --remove-orphans api worker web
 
 # The Caddy instance is shared: never leave an invalid site file behind for other apps' reloads.
-# Without DNS, Caddy would retry certificate issuance and hit ACME failure limits.
+# Without public DNS, Caddy would retry certificate issuance and hit ACME failure limits.
+# Ask a public resolver: the host's own resolver may still cache a pre-record miss.
 host="$(sed -n 's/^\([a-z0-9.-]*\.[a-z]*\) {$/\1/p' deploy/spectwin.caddy | head -1)"
-if ! getent hosts "$host" >/dev/null; then
-  echo "== $host does not resolve; Caddy site not installed (loopback only)"
+if [[ -z "$(dig +short A "$host" @1.1.1.1)" ]]; then
+  echo "== $host does not resolve publicly; Caddy site not installed (loopback only)"
 elif ! sudo cmp -s deploy/spectwin.caddy "$SITE"; then
   previous="$(mktemp)"
   had_previous=false
