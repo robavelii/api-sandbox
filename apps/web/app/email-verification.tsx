@@ -33,26 +33,34 @@ export default function EmailVerification() {
     }
   }
   return (
-    <section>
+    <div className="panel form-panel">
       <h3>Email verification</h3>
-      <button
-        type="button"
-        className="button light"
-        disabled={busy}
-        onClick={() => void submit(false)}
-      >
-        Send verification code
-      </button>
+      <p className="muted">
+        Verified addresses can create and accept invitations and recover a lost
+        password.
+      </p>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn"
+          disabled={busy}
+          onClick={() => void submit(false)}
+        >
+          Send verification code
+        </button>
+      </div>
       <form
-        className="scenario-toolbar"
+        className="form-grid"
         onSubmit={(event) => {
           event.preventDefault();
           void submit(true);
         }}
       >
-        <label>
-          Verification code
+        <div className="field">
+          <label htmlFor="verification-code">Verification code</label>
           <input
+            id="verification-code"
+            className="measured"
             value={code}
             onChange={(event) => setCode(event.target.value.trim())}
             required
@@ -60,12 +68,18 @@ export default function EmailVerification() {
             maxLength={64}
             autoComplete="one-time-code"
           />
-        </label>
-        <button className="button light" disabled={busy}>
-          Verify email
-        </button>
+        </div>
+        <div className="actions">
+          <button className="btn" disabled={busy}>
+            Verify email
+          </button>
+        </div>
       </form>
-      {message && <p role="status">{message}</p>}
-    </section>
+      {message && (
+        <p role="status" className="callout">
+          {message}
+        </p>
+      )}
+    </div>
   );
 }

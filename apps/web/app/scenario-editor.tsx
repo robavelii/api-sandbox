@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import ConfirmAction from "./confirm-action";
 type Version = {
   id: string;
   number: number;
@@ -101,245 +102,264 @@ export default function ScenarioEditor({
       setBusy(false);
     }
   }
+  const loadExample = () => {
+    const op =
+      operationIds.find((id) => id.startsWith("POST ") && !id.includes("{")) ||
+      operationIds[0];
+    setSource(
+      JSON.stringify(
+        {
+          version: 1,
+          name: "Three failures then success",
+          seed: "test-seed",
+          clock: "2026-06-01T12:00:00.000Z",
+          idempotency: "replay",
+          rules: [
+            {
+              operation: op,
+              times: 3,
+              failure: { phase: "before", status: 429 },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+  };
   return (
-    <section className="panel scenario-editor" id="scenarios">
-      <div className="panel-heading">
-        <div>
-          <div className="eyebrow muted">REPRODUCIBLE BEHAVIOR</div>
-          <h3>Scenario versions</h3>
-        </div>
-        <span className="pill green">
+    <section className="tab-panel" id="scenarios">
+      <div className="section-head">
+        <h2>Scenario versions</h2>
+        <span className="chip chip-cool">
           Session pinned to v
           {versions.find((v) => v.id === versionId)?.number || "…"}
         </span>
       </div>
-      <p>
+      <p className="muted">
         Saving creates a new draft. Review and approve it, then select it for
-        this session. Switching versions resets this session’s state.
+        this session. Switching versions resets this session&rsquo;s state.
       </p>
-      <div className="scenario-toolbar">
-        <select
-          aria-label="Scenario version to review"
-          value={selected}
-          onChange={(e) => {
-            setSelected(e.target.value);
-            setSource(
-              JSON.stringify(
-                versions.find((v) => v.id === e.target.value)?.definition,
-                null,
-                2,
-              ),
-            );
-          }}
-        >
-          {versions.map((v) => (
-            <option key={v.id} value={v.id}>
-              v{v.number} · {v.definition.name} ·{" "}
-              {v.approved_at ? "approved" : "draft"}
-            </option>
-          ))}
-        </select>
-        <button
-          disabled={busy}
-          className="button light"
-          onClick={() => {
-            const op =
-              operationIds.find(
-                (id) => id.startsWith("POST ") && !id.includes("{"),
-              ) || operationIds[0];
-            setSource(
-              JSON.stringify(
-                {
-                  version: 1,
-                  name: "Three failures then success",
-                  seed: "test-seed",
-                  clock: "2026-06-01T12:00:00.000Z",
-                  idempotency: "replay",
-                  rules: [
-                    {
-                      operation: op,
-                      times: 3,
-                      failure: { phase: "before", status: 429 },
-                    },
-                  ],
-                },
-                null,
-                2,
-              ),
-            );
-          }}
-        >
-          Load retry example
-        </button>
-      </div>
-      <div className="scenario-toolbar">
-        <button
-          className="button light"
-          disabled={busy}
-          onClick={() =>
-            run(async () => {
-              setProposals(await api(`/sandboxes/${boxId}/proposals`));
-            })
-          }
-        >
-          Suggest retry scenarios
-        </button>
-        {proposals.length > 0 && (
-          <select
-            aria-label="Suggested scenario"
-            defaultValue=""
-            onChange={(event) => {
-              const proposal = proposals[Number(event.target.value)];
-              if (proposal)
+      <div className="scenario-grid">
+        <div className="scenario-main">
+          <div className="field">
+            <label htmlFor="scenario-version">Version</label>
+            <select
+              id="scenario-version"
+              aria-label="Scenario version to review"
+              value={selected}
+              onChange={(e) => {
+                setSelected(e.target.value);
+                setSource(
+                  JSON.stringify(
+                    versions.find((v) => v.id === e.target.value)?.definition,
+                    null,
+                    2,
+                  ),
+                );
+              }}
+            >
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {`v${v.number} ${v.definition.name}, ${v.approved_at ? "approved" : "draft"}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="definition">Typed scenario definition</label>
+            <textarea
+              id="definition"
+              className="code-input code-input-tall"
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              spellCheck={false}
+            />
+          </div>
+          {error && (
+            <p role="alert" className="callout callout-bad">
+              {error}
+            </p>
+          )}
+          <div className="actions">
+            <button
+              disabled={busy || !source}
+              className="btn btn-primary"
+              onClick={() =>
+                run(async () => {
+                  const created = await api(
+                    `/sandboxes/${boxId}/versions`,
+                    JSON.parse(source),
+                  );
+                  await load();
+                  setSelected(created.id);
+                  setSource(JSON.stringify(created.definition, null, 2));
+                })
+              }
+            >
+              Save as new draft
+            </button>
+            <button
+              disabled={
+                busy ||
+                !version ||
+                !!version.approved_at ||
+                !savedDefinitionSelected
+              }
+              className="btn"
+              onClick={() =>
+                run(async () => {
+                  await api(
+                    `/sandboxes/${boxId}/versions/${selected}/approve`,
+                    {},
+                  );
+                  await load();
+                })
+              }
+            >
+              Approve saved definition
+            </button>
+            <ConfirmAction
+              label="Use version & reset session"
+              title={`Use v${version?.number ?? ""} for this session?`}
+              body="This deletes resources, logs and retry history in the selected session."
+              confirmLabel="Use version"
+              danger
+              disabled={
+                busy ||
+                !sid ||
+                !version?.approved_at ||
+                !savedDefinitionSelected
+              }
+              onConfirm={() =>
+                run(async () => {
+                  await api(`/sandboxes/${boxId}/sessions/${sid}/configure`, {
+                    versionId: selected,
+                  });
+                  await onChange();
+                })
+              }
+            />
+          </div>
+          <dl className="panels facts">
+            <div>
+              <dt>Idempotency policy</dt>
+              <dd className="measured">
+                {version?.definition.idempotency || "not set"}
+              </dd>
+            </div>
+            <div>
+              <dt>Session clock</dt>
+              <dd className="measured cool">
+                {clock ? new Date(clock).toISOString() : "not set"}
+              </dd>
+              <button
+                className="btn"
+                disabled={busy || !sid}
+                onClick={() =>
+                  run(async () => {
+                    await api(`/sandboxes/${boxId}/sessions/${sid}/clock`, {
+                      advanceMs: 1000,
+                    });
+                    await onChange();
+                  })
+                }
+              >
+                Advance 1 second
+              </button>
+            </div>
+          </dl>
+          <p className="hint">
+            Send Idempotency-Key on mutation requests. Review the saved JSON
+            before approval; edited text must be saved as a new draft.
+          </p>
+        </div>
+        <aside className="panel scenario-aside">
+          <h3>Start a draft</h3>
+          <div className="actions">
+            <button disabled={busy} className="btn" onClick={loadExample}>
+              Load retry example
+            </button>
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() =>
+                run(async () => {
+                  setProposals(await api(`/sandboxes/${boxId}/proposals`));
+                })
+              }
+            >
+              Suggest retry scenarios
+            </button>
+          </div>
+          {proposals.length > 0 && (
+            <>
+              <select
+                aria-label="Suggested scenario"
+                defaultValue=""
+                onChange={(event) => {
+                  const proposal = proposals[Number(event.target.value)];
+                  if (proposal)
+                    setSource(JSON.stringify(proposal.definition, null, 2));
+                }}
+              >
+                <option value="" disabled>
+                  Choose a draft to review
+                </option>
+                {proposals.map((proposal, index) => (
+                  <option key={index} value={index}>
+                    {proposal.definition.name}
+                  </option>
+                ))}
+              </select>
+              <p className="hint">
+                Template suggestions use declared operations. Review the rule,
+                save a draft, and approve it before activation.
+              </p>
+            </>
+          )}
+          <form
+            className="form-grid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              run(async () => {
+                const proposal = await api(`/sandboxes/${boxId}/proposals`, {
+                  prompt,
+                });
                 setSource(JSON.stringify(proposal.definition, null, 2));
+                setProposalNotice(
+                  `AI-inferred draft. Declared operations: ${proposal.evidence.join(", ") || "none"}. Review, save and approve before activation.`,
+                );
+              });
             }}
           >
-            <option value="" disabled>
-              Choose a draft to review
-            </option>
-            {proposals.map((proposal, index) => (
-              <option key={index} value={index}>
-                {proposal.definition.name}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-      {proposals.length > 0 && (
-        <p>
-          Template suggestions use declared operations. Review the rule below,
-          save a draft, and approve it before activation.
-        </p>
-      )}
-      <form
-        className="scenario-toolbar"
-        onSubmit={(event) => {
-          event.preventDefault();
-          run(async () => {
-            const proposal = await api(`/sandboxes/${boxId}/proposals`, {
-              prompt,
-            });
-            setSource(JSON.stringify(proposal.definition, null, 2));
-            setProposalNotice(
-              `AI-inferred draft. Declared operations: ${proposal.evidence.join(", ") || "none"}. Review, save and approve before activation.`,
-            );
-          });
-        }}
-      >
-        <label htmlFor="proposal-prompt">Describe a test scenario</label>
-        <input
-          id="proposal-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          maxLength={2000}
-          required
-        />
-        <button className="button light" disabled={busy}>
-          Generate AI draft
-        </button>
-      </form>
-      <p>
-        AI generation sends the scenario request and imported contract to the
-        configured model provider. Limited to 100 requests per workspace per
-        month; failed attempts count.
-      </p>
-      {proposalNotice && <p role="status">{proposalNotice}</p>}
-      <label className="editor-label" htmlFor="definition">
-        Typed scenario definition
-      </label>
-      <textarea
-        id="definition"
-        value={source}
-        onChange={(e) => setSource(e.target.value)}
-        spellCheck={false}
-      />
-      {error && (
-        <p role="alert" className="editor-error">
-          {error}
-        </p>
-      )}
-      <div className="scenario-toolbar">
-        <button
-          disabled={busy || !source}
-          className="button primary"
-          onClick={() =>
-            run(async () => {
-              const created = await api(
-                `/sandboxes/${boxId}/versions`,
-                JSON.parse(source),
-              );
-              await load();
-              setSelected(created.id);
-              setSource(JSON.stringify(created.definition, null, 2));
-            })
-          }
-        >
-          Save as new draft
-        </button>
-        <button
-          disabled={
-            busy ||
-            !version ||
-            !!version.approved_at ||
-            !savedDefinitionSelected
-          }
-          className="button light"
-          onClick={() =>
-            run(async () => {
-              await api(`/sandboxes/${boxId}/versions/${selected}/approve`, {});
-              await load();
-            })
-          }
-        >
-          Approve saved definition
-        </button>
-        <button
-          disabled={
-            busy || !sid || !version?.approved_at || !savedDefinitionSelected
-          }
-          className="button light"
-          onClick={() =>
-            run(async () => {
-              if (
-                confirm(
-                  "Use this approved version and delete resources, logs, and retry history in the selected session?",
-                )
-              ) {
-                await api(`/sandboxes/${boxId}/sessions/${sid}/configure`, {
-                  versionId: selected,
-                });
-                await onChange();
-              }
-            })
-          }
-        >
-          Use version & reset session
-        </button>
-      </div>
-      <div className="scenario-note">
-        Idempotency policy: {version?.definition.idempotency || "—"}. Send
-        Idempotency-Key on mutation requests. Review the saved JSON before
-        approval; edited text must be saved as a new draft.
-      </div>
-      <div className="scenario-toolbar">
-        <span>
-          Session clock:{" "}
-          <code>{clock ? new Date(clock).toISOString() : "—"}</code>
-        </span>
-        <button
-          className="text-button"
-          disabled={busy || !sid}
-          onClick={() =>
-            run(async () => {
-              await api(`/sandboxes/${boxId}/sessions/${sid}/clock`, {
-                advanceMs: 1000,
-              });
-              await onChange();
-            })
-          }
-        >
-          Advance 1 second
-        </button>
+            <div className="field">
+              <label htmlFor="proposal-prompt">Describe a test scenario</label>
+              <input
+                id="proposal-prompt"
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                maxLength={2000}
+                required
+              />
+            </div>
+            <div className="actions">
+              <button className="btn" disabled={busy}>
+                Generate AI draft
+              </button>
+            </div>
+          </form>
+          <p className="hint">
+            AI generation sends the scenario request and imported contract to
+            the configured model provider. Limited to 100 requests per workspace
+            per month; failed attempts count.
+          </p>
+          {proposalNotice && (
+            <p role="status" className="callout">
+              {proposalNotice}
+            </p>
+          )}
+        </aside>
       </div>
     </section>
   );

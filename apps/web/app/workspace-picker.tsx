@@ -23,46 +23,48 @@ export default function WorkspacePicker({ currentId }: { currentId: string }) {
     };
   }, []);
   return (
-    <div>
-      <label>
-        Workspace{" "}
-        <select
-          aria-label="Active workspace"
-          value={currentId}
-          disabled={busy}
-          onChange={async (event) => {
-            setBusy(true);
-            setError("");
-            try {
-              const response = await fetch("/api/workspaces/select", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ workspaceId: event.target.value }),
-              });
-              if (!response.ok)
-                throw new Error(
-                  (await response.json()).error ||
-                    "Unable to switch workspace.",
-                );
-              window.location.reload();
-            } catch (error) {
-              setError(
-                error instanceof Error
-                  ? error.message
-                  : "Unable to switch workspace.",
+    <div className="field picker">
+      <label htmlFor="active-workspace">Workspace</label>
+      <select
+        id="active-workspace"
+        aria-label="Active workspace"
+        value={currentId}
+        disabled={busy}
+        onChange={async (event) => {
+          setBusy(true);
+          setError("");
+          try {
+            const response = await fetch("/api/workspaces/select", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ workspaceId: event.target.value }),
+            });
+            if (!response.ok)
+              throw new Error(
+                (await response.json()).error || "Unable to switch workspace.",
               );
-              setBusy(false);
-            }
-          }}
-        >
-          {workspaces.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>
-              {workspace.name} · {workspace.role}
-            </option>
-          ))}
-        </select>
-      </label>
-      {error && <p role="alert">{error}</p>}
+            window.location.reload();
+          } catch (error) {
+            setError(
+              error instanceof Error
+                ? error.message
+                : "Unable to switch workspace.",
+            );
+            setBusy(false);
+          }
+        }}
+      >
+        {workspaces.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.name} ({workspace.role})
+          </option>
+        ))}
+      </select>
+      {error && (
+        <p role="alert" className="hint bad">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
