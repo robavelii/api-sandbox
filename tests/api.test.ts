@@ -34,6 +34,7 @@ test(
     await pool.query(
       await readFile("migrations/007_account_recovery.sql", "utf8"),
     );
+    await pool.query(await readFile("migrations/008_audit_events.sql", "utf8"));
     let verificationCode = "";
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
@@ -1082,6 +1083,52 @@ test(
       429,
     );
     const workspaceAuth = `${auth}; st_workspace=${first.data.organization_id}`;
+    const audit = await request(
+      "/api/workspaces/audit",
+      "GET",
+      undefined,
+      workspaceAuth,
+    );
+    assert.equal(audit.status, 200);
+    assert.ok(
+      audit.data.some((event: any) => event.action === "sandbox.key_rotated"),
+    );
+    const outsiderAudit = await request(
+      "/api/workspaces/audit",
+      "GET",
+      undefined,
+      other,
+    );
+    assert.equal(outsiderAudit.status, 200);
+    assert.ok(
+      outsiderAudit.data.every((event: any) => event.resource_id !== id),
+    );
+    assert.doesNotMatch(
+      JSON.stringify(audit.data),
+      new RegExp(rotated.data.apiKey),
+    );
+    assert.equal(
+      (
+        await request(
+          "/api/workspaces/audit?before=invalid",
+          "GET",
+          undefined,
+          workspaceAuth,
+        )
+      ).status,
+      400,
+    );
+    const auditPage = await request(
+      `/api/workspaces/audit?before=${audit.data[0].id}`,
+      "GET",
+      undefined,
+      workspaceAuth,
+    );
+    assert.ok(
+      auditPage.data.every(
+        (event: any) => BigInt(event.id) < BigInt(audit.data[0].id),
+      ),
+    );
     const invitation = await request(
       "/api/workspaces/invitations",
       "POST",
@@ -1237,6 +1284,11 @@ test(
     );
     assert.equal(
       (await request("/api/workspaces/members", "GET", undefined, memberAuth))
+        .status,
+      403,
+    );
+    assert.equal(
+      (await request("/api/workspaces/audit", "GET", undefined, memberAuth))
         .status,
       403,
     );
