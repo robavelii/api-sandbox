@@ -53,14 +53,14 @@ elif ! sudo cmp -s deploy/spectwin.caddy "$SITE"; then
   if sudo test -f "$SITE"; then sudo cp "$SITE" "$previous"; had_previous=true; fi
   sudo install -m 644 deploy/spectwin.caddy "$SITE"
   # Validate as the service user: as root it would create log files Caddy cannot open.
-  if ! sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+  if ! sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile ||
+    ! sudo systemctl reload caddy; then
     if $had_previous; then sudo install -m 644 "$previous" "$SITE"; else sudo rm -f "$SITE"; fi
     rm -f "$previous"
-    echo "Caddy rejected spectwin.caddy; previous site restored, Caddy not reloaded."
+    echo "Caddy rejected spectwin.caddy; previous site restored."
     exit 1
   fi
   rm -f "$previous"
-  sudo systemctl reload caddy
   echo "== caddy site updated and reloaded"
 fi
 curl -fsS http://127.0.0.1:4100/health >/dev/null
