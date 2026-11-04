@@ -40,26 +40,28 @@ export default function PasswordRecovery() {
   }
   return (
     <details
-      className="panel"
+      className="disclosure"
       id="password-recovery"
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>Forgot password?</summary>
       {open && (
-        <>
-          <p>
+        <div className="disclosure-body">
+          <p className="muted">
             Recovery is available for verified email addresses. Request a code,
             then enter it below within 30 minutes.
           </p>
           <form
+            className="form-grid"
             onSubmit={(event) => {
               event.preventDefault();
               void submit(false);
             }}
           >
-            <label>
-              Recovery email
+            <div className="field">
+              <label htmlFor="recovery-email">Recovery email</label>
               <input
+                id="recovery-email"
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
@@ -67,20 +69,25 @@ export default function PasswordRecovery() {
                 maxLength={254}
                 autoComplete="email"
               />
-            </label>
-            <button className="button light" disabled={busy}>
-              Send recovery code
-            </button>
+            </div>
+            <div className="actions">
+              <button className="btn" disabled={busy}>
+                Send recovery code
+              </button>
+            </div>
           </form>
           <form
+            className="form-grid"
             onSubmit={(event) => {
               event.preventDefault();
               void submit(true);
             }}
           >
-            <label>
-              Recovery code
+            <div className="field">
+              <label htmlFor="recovery-code">Recovery code</label>
               <input
+                id="recovery-code"
+                className="measured"
                 value={code}
                 onChange={(event) => setCode(event.target.value.trim())}
                 required
@@ -88,10 +95,11 @@ export default function PasswordRecovery() {
                 maxLength={64}
                 autoComplete="one-time-code"
               />
-            </label>
-            <label>
-              Replacement password
+            </div>
+            <div className="field">
+              <label htmlFor="replacement-password">Replacement password</label>
               <input
+                id="replacement-password"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -100,13 +108,19 @@ export default function PasswordRecovery() {
                 maxLength={128}
                 autoComplete="new-password"
               />
-            </label>
-            <button className="button light" disabled={busy}>
-              Reset password
-            </button>
+            </div>
+            <div className="actions">
+              <button className="btn" disabled={busy}>
+                Reset password
+              </button>
+            </div>
           </form>
-          {message && <p role="status">{message}</p>}
-        </>
+          {message && (
+            <p role="status" className="callout">
+              {message}
+            </p>
+          )}
+        </div>
       )}
     </details>
   );

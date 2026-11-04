@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
 
 type AuditEvent = {
   id: string;
@@ -37,43 +38,57 @@ export default function WorkspaceAudit() {
       setBusy(false);
     }
   }
+  useEffect(() => {
+    void load(false);
+  }, []);
   return (
-    <details className="panel" id="workspace-audit">
-      <summary>Workspace audit history</summary>
-      <p>
+    <section className="settings-section" id="workspace-audit">
+      <div className="section-head">
+        <h2>Audit history</h2>
+        <button
+          className="btn btn-quiet"
+          disabled={busy}
+          onClick={() => void load(false)}
+        >
+          <RotateCw aria-hidden size={16} />
+          Refresh
+        </button>
+      </div>
+      <p className="muted">
         Committed membership, key, approval and scenario changes are retained
         for 90 days. Records identify affected resources; actor attribution is
         not available yet.
       </p>
-      <button
-        className="button light"
-        disabled={busy}
-        onClick={() => void load(false)}
-      >
-        Load audit history
-      </button>
-      {error && <p role="alert">{error}</p>}
-      {events.map((event) => (
-        <article className="activity" key={event.id}>
-          <div>
-            <strong>{event.action}</strong>
-            <small>
-              {new Date(event.created_at).toLocaleString()} ·{" "}
-              {event.resource_id}
-            </small>
-            <code>{JSON.stringify(event.metadata)}</code>
-          </div>
-        </article>
-      ))}
+      {error && (
+        <p role="alert" className="callout callout-bad">
+          {error}
+        </p>
+      )}
+      {events.length > 0 ? (
+        <ol className="trail">
+          {events.map((event) => (
+            <li key={event.id}>
+              <p className="trail-action measured">{event.action}</p>
+              <p className="trail-meta">
+                <span className="measured cool">
+                  {new Date(event.created_at).toLocaleString()}
+                </span>
+                <span className="measured muted">{event.resource_id}</span>
+              </p>
+              <code className="trail-data">
+                {JSON.stringify(event.metadata)}
+              </code>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        !busy && <p className="panel empty">No audit events yet.</p>
+      )}
       {more && (
-        <button
-          className="button light"
-          disabled={busy}
-          onClick={() => void load(true)}
-        >
+        <button className="btn" disabled={busy} onClick={() => void load(true)}>
           Load older audit events
         </button>
       )}
-    </details>
+    </section>
   );
 }

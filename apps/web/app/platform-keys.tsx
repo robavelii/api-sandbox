@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
 
 type Key = {
   id: string;
@@ -39,16 +40,29 @@ export default function PlatformKeys() {
       setBusy(false);
     }
   }
+  useEffect(() => {
+    void run(async () => setKeys(await api("")));
+  }, []);
   return (
-    <details className="panel" id="platform-keys">
-      <summary>Platform API keys</summary>
-      <p>
+    <section className="settings-section" id="platform-keys">
+      <div className="section-head">
+        <h2>Platform keys</h2>
+        <button
+          className="btn btn-quiet"
+          disabled={busy}
+          onClick={() => void run(async () => setKeys(await api("")))}
+        >
+          <RotateCw aria-hidden size={16} />
+          Refresh
+        </button>
+      </div>
+      <p className="muted">
         Create read-only control-plane keys for CI and tooling. Keys are bound
         to this workspace and require their creator to retain owner access.
         Sandbox request keys are separate.
       </p>
       <form
-        className="scenario-toolbar"
+        className="panel form-panel form-row"
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
@@ -59,18 +73,20 @@ export default function PlatformKeys() {
           });
         }}
       >
-        <label>
-          Platform key name
+        <div className="field">
+          <label htmlFor="platform-key-name">Platform key name</label>
           <input
+            id="platform-key-name"
             required
             maxLength={80}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
-        </label>
-        <label>
-          Expires in days
+        </div>
+        <div className="field field-short">
+          <label htmlFor="platform-key-days">Expires in days</label>
           <input
+            id="platform-key-days"
             type="number"
             required
             min={1}
@@ -78,51 +94,85 @@ export default function PlatformKeys() {
             value={days}
             onChange={(event) => setDays(Number(event.target.value))}
           />
-        </label>
-        <button className="button light" disabled={busy}>
+        </div>
+        <button className="btn btn-primary" disabled={busy}>
           Create platform key
         </button>
       </form>
       {secret && (
-        <p>
-          Save this platform key now: <code>{secret}</code>{" "}
-          <button type="button" onClick={() => setSecret("")}>
+        <div className="callout callout-accent secret">
+          <p>
+            Save this platform key now:{" "}
+            <code className="secret-value">{secret}</code>
+          </p>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => setSecret("")}
+          >
             Dismiss platform key
           </button>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="callout callout-bad">
+          {error}
         </p>
       )}
-      <button
-        className="button light"
-        disabled={busy}
-        onClick={() => void run(async () => setKeys(await api("")))}
-      >
-        Load platform keys
-      </button>
-      {keys.map((key) => (
-        <div className="scenario-toolbar" key={key.id}>
-          <span>
-            {key.name} · {key.scope} · expires{" "}
-            {new Date(key.expires_at).toLocaleDateString()} ·{" "}
-            {key.revoked_at ? "revoked" : "issued"}
-          </span>
-          {!key.revoked_at && (
-            <button
-              className="button light"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  await api(`/${key.id}/revoke`, {});
-                  setKeys(await api(""));
-                  setSecret("");
-                })
-              }
-            >
-              Revoke {key.name}
-            </button>
-          )}
+      {keys.length > 0 ? (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Scope</th>
+                <th scope="col">Expires</th>
+                <th scope="col">Status</th>
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => (
+                <tr key={key.id}>
+                  <td>{key.name}</td>
+                  <td>{key.scope}</td>
+                  <td className="measured cool">
+                    {new Date(key.expires_at).toLocaleDateString()}
+                  </td>
+                  <td>
+                    {key.revoked_at ? (
+                      <span className="chip chip-bad">revoked</span>
+                    ) : (
+                      <span className="chip chip-ok">issued</span>
+                    )}
+                  </td>
+                  <td className="cell-action">
+                    {!key.revoked_at && (
+                      <button
+                        className="btn btn-quiet"
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            await api(`/${key.id}/revoke`, {});
+                            setKeys(await api(""));
+                            setSecret("");
+                          })
+                        }
+                      >
+                        Revoke {key.name}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
-      {error && <p role="alert">{error}</p>}
-    </details>
+      ) : (
+        !busy && <p className="panel empty">No platform keys yet.</p>
+      )}
+    </section>
   );
 }

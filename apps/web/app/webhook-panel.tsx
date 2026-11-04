@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
+import ConfirmAction from "./confirm-action";
 
 type Endpoint = {
   id: string;
@@ -58,27 +60,25 @@ export default function WebhookPanel({ boxId }: { boxId: string }) {
     }
   }
   return (
-    <section className="panel webhook-panel" id="webhooks">
-      <div className="panel-heading">
-        <div>
-          <div className="eyebrow muted">OUTGOING EVENTS</div>
-          <h3>Webhook delivery</h3>
-        </div>
+    <section className="tab-panel" id="webhooks">
+      <div className="section-head">
+        <h2>Webhook delivery</h2>
         <button
-          className="text-button"
+          className="btn btn-quiet"
           disabled={busy}
           onClick={() => run(refresh)}
         >
-          ↻ Reload webhooks
+          <RotateCw aria-hidden size={16} />
+          Reload webhooks
         </button>
       </div>
-      <p>
+      <p className="muted">
         HTTPS endpoints are resolved to public addresses before every
         connection. Event IDs stay stable across retries, so receivers can
         deduplicate delivery.
       </p>
       <form
-        className="scenario-toolbar"
+        className="panel form-panel form-row"
         onSubmit={(event) => {
           event.preventDefault();
           const form = event.currentTarget;
@@ -94,99 +94,170 @@ export default function WebhookPanel({ boxId }: { boxId: string }) {
           });
         }}
       >
-        <input
-          name="url"
-          type="url"
-          placeholder="https://example.com/webhooks"
-          required
-        />
-        <input
-          name="description"
-          maxLength={200}
-          placeholder="Checkout test receiver"
-        />
-        <button className="button primary" disabled={busy}>
+        <div className="field">
+          <label htmlFor="webhook-url">Endpoint URL</label>
+          <input
+            id="webhook-url"
+            name="url"
+            type="url"
+            placeholder="https://example.com/webhooks"
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="webhook-description">Description</label>
+          <input
+            id="webhook-description"
+            name="description"
+            maxLength={200}
+            placeholder="Checkout test receiver"
+          />
+        </div>
+        <button className="btn btn-primary" disabled={busy}>
           Add endpoint
         </button>
       </form>
       {secret && (
-        <div className="warnings">
-          <strong>Save this signing secret now:</strong> <code>{secret}</code>
-          <button className="text-button" onClick={() => setSecret("")}>
+        <div className="callout callout-accent secret">
+          <div>
+            <strong>Save this signing secret now:</strong>{" "}
+            <code className="secret-value">{secret}</code>
+          </div>
+          <button className="btn btn-quiet" onClick={() => setSecret("")}>
             Dismiss
           </button>
         </div>
       )}
       {error && (
-        <p className="editor-error" role="alert">
+        <p className="callout callout-bad" role="alert">
           {error}
         </p>
       )}
-      {endpoints.map((endpoint) => (
-        <div className="operation" key={endpoint.id}>
-          <span className={`pill ${endpoint.active ? "green" : ""}`}>
-            {endpoint.active ? "ACTIVE" : "DISABLED"}
-          </span>
-          <div>
-            <code>{endpoint.url}</code>
-            <small>{endpoint.description}</small>
-          </div>
-          {endpoint.active && (
-            <button
-              className="text-button"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  if (confirm("Disable this webhook endpoint?")) {
-                    await api(
-                      `/sandboxes/${boxId}/webhooks/${endpoint.id}/disable`,
-                      {},
-                    );
-                    await refresh();
-                  }
-                })
-              }
-            >
-              Disable
-            </button>
-          )}
+      {endpoints.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <caption className="visually-hidden">Endpoints</caption>
+            <thead>
+              <tr>
+                <th scope="col">Status</th>
+                <th scope="col">Endpoint</th>
+                <th scope="col">Description</th>
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {endpoints.map((endpoint) => (
+                <tr key={endpoint.id}>
+                  <td>
+                    {endpoint.active ? (
+                      <span className="chip chip-ok">Active</span>
+                    ) : (
+                      <span className="chip">Disabled</span>
+                    )}
+                  </td>
+                  <td className="measured">{endpoint.url}</td>
+                  <td>{endpoint.description}</td>
+                  <td className="cell-action">
+                    {endpoint.active && (
+                      <ConfirmAction
+                        className="btn btn-quiet"
+                        label="Disable"
+                        title="Disable this webhook endpoint?"
+                        body={`${endpoint.url} stops receiving events from this sandbox.`}
+                        confirmLabel="Disable endpoint"
+                        danger
+                        disabled={busy}
+                        onConfirm={() =>
+                          run(async () => {
+                            await api(
+                              `/sandboxes/${boxId}/webhooks/${endpoint.id}/disable`,
+                              {},
+                            );
+                            await refresh();
+                          })
+                        }
+                      />
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
-      <h3>Recent deliveries</h3>
-      {!deliveries.length && (
-        <div className="no-activity">No webhook deliveries yet.</div>
       )}
-      {deliveries.map((delivery) => (
-        <div className="activity" key={delivery.id}>
-          <div>
-            <strong>
-              {delivery.type} · {delivery.status}
-            </strong>
-            <small>
-              {delivery.url} · {delivery.attempts} attempt(s)
-              {delivery.response_status
-                ? ` · HTTP ${delivery.response_status}`
-                : ""}
-              {delivery.last_error ? ` · ${delivery.last_error}` : ""}
-            </small>
-          </div>
-          <button
-            className="text-button"
-            disabled={busy || delivery.status === "delivering"}
-            onClick={() =>
-              run(async () => {
-                await api(
-                  `/sandboxes/${boxId}/webhook-deliveries/${delivery.id}/replay`,
-                  {},
-                );
-                await refresh();
-              })
-            }
-          >
-            Replay
-          </button>
+      <h3>Recent deliveries</h3>
+      {!deliveries.length ? (
+        <p className="panel empty">No webhook deliveries yet.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th scope="col">Event</th>
+                <th scope="col">Status</th>
+                <th scope="col">Endpoint</th>
+                <th scope="col" className="num">
+                  Attempts
+                </th>
+                <th scope="col">Response</th>
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {deliveries.map((delivery) => (
+                <tr key={delivery.id}>
+                  <td className="measured">{delivery.type}</td>
+                  <td>
+                    <span
+                      className={
+                        "chip " +
+                        (delivery.status === "delivered"
+                          ? "chip-ok"
+                          : delivery.status === "failed"
+                            ? "chip-bad"
+                            : "")
+                      }
+                    >
+                      {delivery.status}
+                    </span>
+                  </td>
+                  <td className="measured">{delivery.url}</td>
+                  <td className="num measured">{delivery.attempts}</td>
+                  <td>
+                    {delivery.response_status && (
+                      <span className="measured">
+                        HTTP {delivery.response_status}{" "}
+                      </span>
+                    )}
+                    {delivery.last_error}
+                  </td>
+                  <td className="cell-action">
+                    <button
+                      className="btn btn-quiet"
+                      disabled={busy || delivery.status === "delivering"}
+                      onClick={() =>
+                        run(async () => {
+                          await api(
+                            `/sandboxes/${boxId}/webhook-deliveries/${delivery.id}/replay`,
+                            {},
+                          );
+                          await refresh();
+                        })
+                      }
+                    >
+                      Replay
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
+      )}
     </section>
   );
 }

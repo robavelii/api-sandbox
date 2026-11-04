@@ -20,7 +20,7 @@ test("a team can configure and replay an isolated integration journey", async ({
   await page.getByLabel("Password").fill("integration-password");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(
-    page.getByRole("heading", { name: "Make integrations feel real." }),
+    page.getByRole("heading", { name: "Sandboxes", exact: true }),
   ).toBeVisible();
   const corsSession = await page.evaluate(async () => {
     const response = await fetch("http://127.0.0.1:4100/api/me", {
@@ -38,16 +38,22 @@ test("a team can configure and replay an isolated integration journey", async ({
   );
   expect(rejectedOrigin.status()).toBe(403);
 
-  await page.getByRole("button", { name: "Explore example" }).click();
+  await page.getByRole("link", { name: "Explore example" }).first().click();
   await expect(
     page.getByRole("heading", { name: "Import your API" }),
   ).toBeVisible();
   await expect(page.getByLabel("Specification source")).toContainText(
     '"openapi": "3.0.3"',
   );
-  await page.getByRole("button", { name: "Import contract →" }).click();
+  await page
+    .getByRole("button", { name: "Import contract", exact: true })
+    .click();
 
-  await expect(page.getByText("Review needed")).toBeVisible();
+  // The first visit to the sandbox route compiles it under `next dev`.
+  await expect(page.getByText("Review needed")).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.getByRole("link", { name: "Scenarios" }).click();
   await page
     .getByLabel("Describe a test scenario")
     .fill("Retry payment requests");
@@ -60,11 +66,7 @@ test("a team can configure and replay an isolated integration journey", async ({
   await expect(page.getByLabel("Typed scenario definition")).toHaveValue(
     /Retry/,
   );
-  const endpoint = await page
-    .getByRole("heading", { name: "Your sandbox endpoint" })
-    .locator("..")
-    .locator(".code-row code")
-    .textContent();
+  const endpoint = await page.locator("#sandbox-endpoint").textContent();
   const key = await page
     .getByText("Save this key securely:")
     .locator("..")
@@ -90,15 +92,19 @@ test("a team can configure and replay an isolated integration journey", async ({
     currency: "USD",
   });
 
+  await page.getByRole("link", { name: "Activity" }).click();
   await page.getByRole("button", { name: "Refresh" }).click();
-  await expect(page.getByText("POST /payments", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("row", { name: /POST \/payments 201/ }),
+  ).toBeVisible();
   await expect(
     page
-      .getByText("STORED RESOURCES", { exact: true })
+      .getByText("Stored resources", { exact: true })
       .locator("..")
       .getByText("1", { exact: true }),
   ).toBeVisible();
 
+  await page.getByRole("link", { name: "Scenarios" }).click();
   await page.getByRole("button", { name: "Load retry example" }).click();
   await page.getByRole("button", { name: "Save as new draft" }).click();
   await expect(
@@ -108,8 +114,10 @@ test("a team can configure and replay an isolated integration journey", async ({
   await expect(
     page.getByRole("option", { name: /v2 .* approved/ }),
   ).toBeAttached();
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Use version" }).click();
+  await page
+    .getByRole("button", { name: "Use version & reset session" })
+    .click();
+  await page.getByRole("button", { name: "Use version", exact: true }).click();
   await expect(page.getByText("Session pinned to v2")).toBeVisible();
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -139,22 +147,26 @@ test("a team can configure and replay an isolated integration journey", async ({
   });
   expect(await replay.json()).toEqual(await success.json());
 
+  await page.getByRole("link", { name: "Activity" }).click();
   await page.getByRole("button", { name: "Refresh" }).click();
-  await expect(page.getByText("Replayed saved result")).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
+  await expect(page.getByText("Replayed saved result").first()).toBeVisible();
   await page.getByRole("button", { name: "Reset state" }).click();
+  await page
+    .getByRole("button", { name: "Reset session", exact: true })
+    .click();
   await expect(page.getByText("No requests yet.")).toBeVisible();
   const afterReset = await request.get(`${endpoint}/payments`, {
     headers: { Authorization: `Bearer ${key}` },
   });
   expect(await afterReset.json()).toEqual([]);
 
-  page.once("dialog", (dialog) => dialog.accept("ci"));
   await page.getByRole("button", { name: "New session" }).click();
-  await expect(page.getByLabel("Session")).toHaveValue(/.+/);
-  await expect(page.getByLabel("Session").locator("option:checked")).toHaveText(
-    "ci",
-  );
+  await page.getByLabel("Session name").fill("ci");
+  await page.getByRole("button", { name: "Create session" }).click();
+  await expect(page.getByLabel("Session", { exact: true })).toHaveValue(/.+/);
+  await expect(
+    page.getByLabel("Session", { exact: true }).locator("option:checked"),
+  ).toHaveText("ci");
   const isolated = await request.get(`${endpoint}/payments`, {
     headers: {
       Authorization: `Bearer ${key}`,
@@ -172,7 +184,7 @@ test("a team can configure and replay an isolated integration journey", async ({
   await outsiderPage.getByLabel("Password").fill("integration-password");
   await outsiderPage.getByRole("button", { name: "Create account" }).click();
   await expect(
-    outsiderPage.getByRole("heading", { name: "Make integrations feel real." }),
+    outsiderPage.getByRole("heading", { name: "Sandboxes", exact: true }),
   ).toBeVisible();
   const forbidden = await outsiderPage.evaluate(async (id) => {
     const response = await fetch(`/api/sandboxes/${id}/sessions`);
@@ -183,17 +195,15 @@ test("a team can configure and replay an isolated integration journey", async ({
     body: { error: "Sandbox not found." },
   });
   await outsider.close();
-  await page.getByText("Workspace audit history", { exact: true }).click();
-  await page
-    .getByRole("button", { name: "Load audit history", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("link", { name: "Audit history" }).click();
   await expect(
     page
       .locator("#workspace-audit")
       .getByText("scenario.version_created", { exact: true })
       .first(),
   ).toBeVisible();
-  await page.getByText("Workspace invitations", { exact: true }).click();
+  await page.getByRole("link", { name: "Invitations" }).click();
   await page.getByLabel("Invite email").fill("teammate@example.com");
   await page
     .getByRole("button", { name: "Create invitation", exact: true })
@@ -201,8 +211,7 @@ test("a team can configure and replay an isolated integration journey", async ({
   await expect(
     page.locator("#workspace-invitations").getByRole("alert"),
   ).toContainText("Verify your email");
-  await page.getByText("Workspace members", { exact: true }).click();
-  await page.getByRole("button", { name: "Load members", exact: true }).click();
+  await page.getByRole("link", { name: "Members" }).click();
   const ownRole = page.locator("#workspace-members select");
   await expect(ownRole).toHaveValue("owner");
   await ownRole.selectOption("member");
@@ -213,7 +222,7 @@ test("a team can configure and replay an isolated integration journey", async ({
   await expect(
     page.getByLabel("Active workspace").locator("option"),
   ).toContainText("My workspace");
-  await page.getByText("Account security", { exact: true }).click();
+  await page.getByRole("link", { name: "Account security" }).click();
   await page.getByRole("button", { name: "Send verification code" }).click();
   await expect(
     page.getByText("Verification email delivery is not configured.", {

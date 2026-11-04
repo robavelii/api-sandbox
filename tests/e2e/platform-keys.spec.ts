@@ -14,7 +14,8 @@ test("an owner creates, uses and revokes a read-only platform key", async ({
   await page
     .getByRole("button", { name: "Create account", exact: true })
     .click();
-  await page.getByText("Platform API keys", { exact: true }).click();
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("link", { name: "Platform keys" }).click();
   await page.getByLabel("Platform key name").fill("Browser CI reader");
   await page
     .getByRole("button", { name: "Create platform key", exact: true })
@@ -35,7 +36,7 @@ test("an owner creates, uses and revokes a read-only platform key", async ({
     .getByRole("button", { name: "Revoke Browser CI reader", exact: true })
     .click();
   await expect(
-    page.getByText("Browser CI reader · read ·", { exact: false }),
+    page.getByRole("row", { name: /Browser CI reader read/ }),
   ).toContainText("revoked");
   const revoked = await page.evaluate(
     async (secret) =>
