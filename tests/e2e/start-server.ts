@@ -21,6 +21,7 @@ const child =
         [
           "node_modules/next/dist/bin/next",
           "dev",
+          "--webpack",
           "apps/web",
           "--hostname",
           "127.0.0.1",
