@@ -65,10 +65,11 @@ export async function deliverOne(
   if (!claimed) return false;
   const row = (
     await pool.query(
-      "SELECT d.*,e.type,e.payload,e.created_at AS event_created_at,p.url,p.secret_ciphertext,p.active FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN webhook_endpoints p ON p.id=d.endpoint_id WHERE d.id=$1",
-      [claimed.id],
+      "SELECT d.*,e.type,e.payload,p.url,p.secret_ciphertext,p.active FROM webhook_deliveries d JOIN webhook_events e ON e.id=d.event_id JOIN webhook_endpoints p ON p.id=d.endpoint_id WHERE d.id=$1 AND d.worker_token=$2",
+      [claimed.id, token],
     )
   ).rows[0];
+  if (!row) return true; // A reset may cancel a claim before delivery begins.
   const attempts = row.attempts + 1;
   if (!row.active) {
     await finish(
@@ -84,7 +85,9 @@ export async function deliverOne(
     return true;
   }
   const body = JSON.stringify(row.payload);
-  const timestamp = new Date(row.event_created_at).toISOString();
+  // Sign each delivery attempt with its current wall clock. Event creation time
+  // stays in the payload and must not make delayed deliveries appear stale.
+  const timestamp = now.toISOString();
   try {
     const secret = decryptSecret(row.secret_ciphertext, options.encryptionKey);
     const result = await safePost(

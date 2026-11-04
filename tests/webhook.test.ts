@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import type https from "node:https";
 import {
   decryptSecret,
   encryptSecret,
@@ -9,7 +11,76 @@ import {
   isPublicAddress,
   safePost,
   validateWebhookUrl,
+  createPinnedHttpsSender,
 } from "../apps/worker/src/network.js";
+
+test("HTTPS sender bounds trickling responses, bytes and response failures", async () => {
+  let mode = "success";
+  let response: EventEmitter & { destroy: () => void };
+  let destroyed = false;
+  const factory = ((
+    _url: URL,
+    options: any,
+    callback: (value: any) => void,
+  ) => {
+    const request = new EventEmitter() as any;
+    request.destroy = (error: Error) => {
+      destroyed = true;
+      request.emit("error", error);
+    };
+    response = Object.assign(new EventEmitter(), {
+      statusCode: 200,
+      headers: {},
+      destroy: () => {
+        destroyed = true;
+      },
+    });
+    request.end = () =>
+      queueMicrotask(() => {
+        options.lookup("test", {}, (error: unknown, address: string) => {
+          assert.equal(error, null);
+          assert.equal(address, "8.8.8.8");
+        });
+        callback(response);
+        if (mode === "trickle") {
+          response.emit("data", Buffer.from("x"));
+          return;
+        }
+        if (mode === "error") {
+          response.emit("error", new Error("response failure"));
+          return;
+        }
+        if (mode === "aborted") {
+          response.emit("aborted");
+          return;
+        }
+        response.emit(
+          "data",
+          Buffer.alloc(mode === "large" ? 70000 : 5000, 97),
+        );
+        response.emit("end");
+      });
+    return request;
+  }) as unknown as typeof https.request;
+  const sender = createPinnedHttpsSender(factory, 20);
+  const send = () =>
+    sender(
+      new URL("https://public.example"),
+      { address: "8.8.8.8", family: 4 },
+      "{}",
+      {},
+    );
+  assert.equal((await send()).body.length, 4096);
+  mode = "large";
+  await assert.rejects(send, /byte limit/);
+  assert.equal(destroyed, true);
+  mode = "error";
+  await assert.rejects(send, /response failure/);
+  mode = "aborted";
+  await assert.rejects(send, /aborted/);
+  mode = "trickle";
+  await assert.rejects(send, /absolute deadline/);
+});
 
 test("webhook secrets are authenticated and signatures are stable", () => {
   const key = Buffer.alloc(32, 4).toString("base64");
