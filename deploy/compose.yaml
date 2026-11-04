@@ -1,0 +1,87 @@
+# SpecTwin on a shared host. Run as project "spectwin" from /opt/spectwin via deploy/deploy.sh.
+# Only loopback ports are published; the host's shared Caddy terminates TLS.
+name: spectwin
+
+x-app: &app
+  image: spectwin:${SPECTWIN_IMAGE_TAG:?set by deploy.sh}
+  # Supplies DATABASE_URL and the other runtime secrets.
+  env_file: ${SPECTWIN_ENV_FILE:-/opt/spectwin/.env}
+  restart: unless-stopped
+  networks: [spectwin]
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: spectwin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: spectwin
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spectwin -d spectwin"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [spectwin]
+    mem_limit: 1g
+    cpus: 0.75
+
+  migrate:
+    <<: *app
+    command: ["node", "--import", "tsx", "scripts/migrate.ts"]
+    restart: "no"
+    profiles: [migrate]
+
+  api:
+    <<: *app
+    command: ["node", "apps/api/dist/apps/api/src/main.js"]
+    environment:
+      HOST: 0.0.0.0
+      PORT: "4000"
+      # docker-proxy forwards Caddy's loopback connections from the network gateway.
+      TRUSTED_PROXIES: 172.30.40.1
+    ports: ["127.0.0.1:4100:4000"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    mem_limit: 768m
+    cpus: 0.75
+
+  worker:
+    <<: *app
+    command: ["node", "apps/worker/dist/apps/worker/src/main.js"]
+    mem_limit: 384m
+    cpus: 0.5
+
+  web:
+    <<: *app
+    command: ["npm", "run", "start", "-w", "@spectwin/web"]
+    environment:
+      API_URL: http://api:4000
+      PORT: "3000"
+    ports: ["127.0.0.1:3100:3000"]
+    mem_limit: 768m
+    cpus: 0.75
+
+networks:
+  spectwin:
+    ipam:
+      config:
+        - subnet: 172.30.40.0/24
+          gateway: 172.30.40.1
+
+volumes:
+  postgres-data:
