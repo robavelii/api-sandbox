@@ -1,6 +1,6 @@
 /* Hallmark · shape: app screen · genre: modern-minimal · theme: Console (deal 2/3, seed api-simulation-workbench-developers-9a7c·9967ecbc·2026-11-04·r0) · redesign: full
  * nav: sidebar, each sandbox a destination, collapses to a menu under 60rem · signature: the request ledger led by the latest status as a reading · states: loading, empty, error, full · console: graphite
- * axes: dark/grotesk-sans/chromatic-amber · posture: restrained · contrast: pass · v2.0.0 */
+ * axes: dark/grotesk-sans/chromatic-amber · posture: restrained · contrast: pass · modes: dark+light (paper colourway) · v2.0.0 */
 /* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · weakest: P, an app has little to argue; the argument is that the request record leads and admin sits behind Settings */
 @import url("./tokens.css");
 @import url("./base.css");
@@ -159,6 +159,9 @@ a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.theme-select {
+  padding: var(--space-xs) var(--space-xs) 0;
+}
 .side-foot .btn {
   justify-content: flex-start;
 }
@@ -252,12 +255,12 @@ a:hover {
   cursor: progress;
 }
 .btn-primary {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
+  background: var(--color-accent-fill);
+  border-color: var(--color-accent-fill);
   color: var(--color-accent-ink);
 }
 .btn-primary:hover {
-  background: var(--color-accent);
+  background: var(--color-accent-fill);
   border-color: var(--color-ink);
 }
 .btn-quiet {
@@ -1041,5 +1044,29 @@ p.empty {
   }
   .operations td:nth-child(3) {
     flex-basis: 100%;
+  }
+}
+@media (max-width: 40rem) {
+  /* Keep the sandbox header short so the tabs reach the first screen */
+  .page {
+    gap: var(--space-md);
+  }
+  .stats dd.measured {
+    font-size: var(--text-lg);
+  }
+  .connect > div,
+  .connect > div:first-child {
+    gap: var(--space-xs);
+    padding: var(--space-sm) var(--space-md);
+  }
+  .endpoint {
+    font-size: var(--text-sm);
+  }
+  .connect .hint {
+    font-size: var(--text-xs);
+  }
+  .connect .control-row select {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
