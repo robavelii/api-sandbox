@@ -28,6 +28,11 @@ import {
 import { openAIProposalProvider } from "./proposal-provider.js";
 import { verificationMailer } from "./verification-mail.js";
 import {
+  platformActor,
+  platformKeyReadAllowed,
+  registerPlatformKeys,
+} from "./platform-keys.js";
+import {
   registerRecovery,
   recoveryMailer,
   type RecoverySender,
@@ -80,6 +85,15 @@ export async function createApp(
     reply.header("cache-control", "no-store");
     if (
       req.url.startsWith("/api/") &&
+      req.headers.authorization &&
+      !platformKeyReadAllowed(req.method, req.url)
+    )
+      throw new Problem(
+        403,
+        "Platform keys provide read-only sandbox access. Use a browser session for this action.",
+      );
+    if (
+      req.url.startsWith("/api/") &&
       !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
       req.headers.origin &&
       req.headers.origin !== origin
@@ -111,6 +125,14 @@ export async function createApp(
     );
   }
   async function actor(req: any, ignoreWorkspace = false) {
+    if (req.headers.authorization) {
+      const value = await platformActor(
+        pool,
+        String(req.headers.authorization).replace(/^Bearer /, ""),
+      );
+      if (!value) throw new Problem(401, "Invalid or expired platform key.");
+      return value;
+    }
     const secret = req.cookies.st_session;
     if (!secret) throw new Problem(401, "Sign in required.");
     const workspace = ignoreWorkspace ? null : req.cookies.st_workspace || null;
@@ -309,6 +331,7 @@ export async function createApp(
     return { ok: true };
   });
   f.get("/api/me", async (req: any) => actor(req));
+  registerPlatformKeys(f, pool, actor, tx, Problem);
   f.get("/api/auth/email-status", async (req: any) => {
     const user = await actor(req, true);
     const row = (

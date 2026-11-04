@@ -7,6 +7,7 @@ import WorkspacePicker from "./workspace-picker";
 import WorkspaceMembers from "./workspace-members";
 import WorkspaceAudit from "./workspace-audit";
 import WorkspaceInvitations from "./workspace-invitations";
+import PlatformKeys from "./platform-keys";
 import WebhookPanel from "./webhook-panel";
 type Box = {
   id: string;
@@ -236,6 +237,7 @@ export default function Home() {
           <WorkspacePicker currentId={user.organization_id} />
           {user.role === "owner" && <WorkspaceAudit />}
           <WorkspaceInvitations owner={user.role === "owner"} />
+          {user.role === "owner" && <PlatformKeys />}
           {user.role === "owner" && (
             <WorkspaceMembers currentUserId={user.id} />
           )}
