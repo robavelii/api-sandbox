@@ -27,6 +27,11 @@ import {
 } from "../../../packages/engine/src/proposals.js";
 import { openAIProposalProvider } from "./proposal-provider.js";
 import { verificationMailer } from "./verification-mail.js";
+import {
+  registerRecovery,
+  recoveryMailer,
+  type RecoverySender,
+} from "./recovery.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
 import {
@@ -55,6 +60,7 @@ export async function createApp(
     webhookEncryptionKey?: string;
     proposalProvider?: ProposalProvider;
     sendVerification?: (email: string, code: string) => Promise<void>;
+    sendRecovery?: RecoverySender;
   } = {},
 ) {
   const proposalProvider = options.proposalProvider || openAIProposalProvider();
@@ -93,6 +99,16 @@ export async function createApp(
     } finally {
       c.release();
     }
+  }
+  async function cancelSessionWebhooks(client: PoolClient, sessionId: string) {
+    await client.query(
+      "UPDATE webhook_events SET fanout_at=coalesce(fanout_at,now()) WHERE session_id=$1",
+      [sessionId],
+    );
+    await client.query(
+      "UPDATE webhook_deliveries d SET status='failed',locked_until=NULL,worker_token=NULL,last_error='Session reset or reconfigured',updated_at=now() FROM webhook_events e WHERE d.event_id=e.id AND e.session_id=$1 AND d.status IN ('pending','delivering')",
+      [sessionId],
+    );
   }
   async function actor(req: any, ignoreWorkspace = false) {
     const secret = req.cookies.st_session;
@@ -155,6 +171,13 @@ export async function createApp(
     if (rows[0].attempts > 30)
       throw new Problem(429, "Too many attempts. Try again later.");
   }
+  registerRecovery(
+    f,
+    pool,
+    tx,
+    authLimit,
+    options.sendRecovery || recoveryMailer(),
+  );
   f.post("/api/auth/register", async (req: any, reply: any) => {
     await authLimit(req);
     const email = required(req.body?.email).trim().toLowerCase(),
@@ -247,6 +270,9 @@ export async function createApp(
         user.id,
       ]);
       await client.query("DELETE FROM auth_sessions WHERE user_id=$1", [
+        user.id,
+      ]);
+      await client.query("DELETE FROM password_recoveries WHERE user_id=$1", [
         user.id,
       ]);
       await sessionCookie(reply, user.id, client);
@@ -594,7 +620,7 @@ export async function createApp(
     const u = await actor(req);
     return (
       await pool.query(
-        "SELECT o.request_limit,o.sandbox_limit,coalesce(m.requests,0) AS requests FROM organizations o LEFT JOIN monthly_usage m ON m.organization_id=o.id AND m.month=date_trunc('month',now())::date WHERE o.id=$1",
+        "SELECT o.request_limit,o.sandbox_limit,coalesce(m.requests,0) AS requests FROM organizations o LEFT JOIN monthly_usage m ON m.organization_id=o.id AND m.month=date_trunc('month',now() AT TIME ZONE 'UTC')::date WHERE o.id=$1",
         [u.organization_id],
       )
     ).rows[0];
@@ -835,6 +861,7 @@ export async function createApp(
         [req.params.sid, req.params.id],
       );
       if (!found.rowCount) throw new Problem(404, "Session not found.");
+      await cancelSessionWebhooks(c, req.params.sid);
       await c.query("DELETE FROM resources WHERE session_id=$1", [
         req.params.sid,
       ]);
@@ -969,6 +996,7 @@ export async function createApp(
       ).rows[0];
       if (!version)
         throw new Problem(409, "Choose an approved version from this sandbox.");
+      await cancelSessionWebhooks(c, row.id);
       await c.query("DELETE FROM resources WHERE session_id=$1", [row.id]);
       await c.query("DELETE FROM request_logs WHERE session_id=$1", [row.id]);
       await c.query("DELETE FROM idempotent_results WHERE session_id=$1", [

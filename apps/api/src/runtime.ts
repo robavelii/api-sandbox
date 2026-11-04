@@ -43,28 +43,27 @@ export async function execute(
     return { status, data, delay };
   };
   if (!session.approved_at)
-    return log(
-      409,
-      { error: "Approve the pinned scenario version first." },
-      "Unapproved scenario",
-    );
-  const usage = (
-    await c.query(
-      "INSERT INTO monthly_usage VALUES($1,date_trunc('month',now())::date,1) ON CONFLICT(organization_id,month) DO UPDATE SET requests=monthly_usage.requests+1 RETURNING requests",
-      [sandbox.organization_id],
-    )
-  ).rows[0];
+    return {
+      status: 409,
+      data: { error: "Approve the pinned scenario version first." },
+      delay: 0,
+    };
   const limit = (
     await c.query("SELECT request_limit FROM organizations WHERE id=$1", [
       sandbox.organization_id,
     ])
   ).rows[0].request_limit;
-  if (usage.requests > limit)
-    return log(
-      429,
-      { error: "Monthly request quota exceeded." },
-      "Platform quota",
-    );
+  const usage = await c.query(
+    "INSERT INTO monthly_usage(organization_id,month,requests) SELECT $1,date_trunc('month',now() AT TIME ZONE 'UTC')::date,1 WHERE $2::integer>0 ON CONFLICT(organization_id,month) DO UPDATE SET requests=monthly_usage.requests+1 WHERE monthly_usage.requests<$2 RETURNING requests",
+    [sandbox.organization_id, limit],
+  );
+  // Do not persist a counter increment or a log row for every denied request.
+  if (!usage.rowCount)
+    return {
+      status: 429,
+      data: { error: "Monthly request quota exceeded." },
+      delay: 0,
+    };
   const op = match(sandbox.contract, req.method, route);
   if (!op)
     return log(404, { error: "Operation is not declared." }, "Route not found");
