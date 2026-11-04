@@ -1,0 +1,31 @@
+# SpecTwin on the host's shared Caddy, installed as /etc/caddy/sites/spectwin.caddy by deploy/deploy.sh.
+# DNS only (no Cloudflare proxy): Caddy obtains the certificate and replaces any client-sent
+# X-Forwarded-For, which the API trusts only from its compose network gateway.
+
+spectwin.rfh.et {
+	encode zstd gzip
+
+	# Control-plane API and the sandbox runtime go straight to the API, same origin as the dashboard.
+	@api path /api/* /sandbox/* /health
+	handle @api {
+		reverse_proxy 127.0.0.1:4100
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3100
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/spectwin.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}
