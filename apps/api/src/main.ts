@@ -9,6 +9,7 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import { Pool, type PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 import {
   parseContract,
@@ -58,6 +59,29 @@ const required = (value: any, type = "string") => {
   if (typeof value !== type) throw new Problem(400, `Expected ${type}.`);
   return value;
 };
+// Only explicit proxy addresses are trusted, so X-Forwarded-For cannot be
+// spoofed by clients connecting directly. Wildcards are rejected.
+export function trustedProxyList(value = ""): string[] {
+  const entries = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
+    const [address, prefix, extra] = entry.split("/");
+    const family = isIP(address);
+    const bits = family === 4 ? 32 : 128;
+    if (
+      !family ||
+      extra !== undefined ||
+      (prefix !== undefined &&
+        !(/^\d{1,3}$/.test(prefix) && Number(prefix) <= bits))
+    )
+      throw new Error(`Invalid TRUSTED_PROXIES entry: ${entry}`);
+  }
+  if (entries.length > 16)
+    throw new Error("TRUSTED_PROXIES allows 16 entries.");
+  return entries;
+}
 export async function createApp(
   pool: Pool,
   options: {
@@ -66,13 +90,19 @@ export async function createApp(
     proposalProvider?: ProposalProvider;
     sendVerification?: (email: string, code: string) => Promise<void>;
     sendRecovery?: RecoverySender;
+    trustedProxies?: string[];
   } = {},
 ) {
   const proposalProvider = options.proposalProvider || openAIProposalProvider();
   const sendVerification = options.sendVerification || verificationMailer();
+  const trustedProxies =
+    options.trustedProxies || trustedProxyList(process.env.TRUSTED_PROXIES);
   const app = await NestFactory.create<NestFastifyApplication>(
     ApiModule,
-    new FastifyAdapter({ bodyLimit: 1_048_576, trustProxy: false }),
+    new FastifyAdapter({
+      bodyLimit: 1_048_576,
+      trustProxy: trustedProxies.length ? trustedProxies : false,
+    }),
     { logger: false },
   );
   const f = app.getHttpAdapter().getInstance();
