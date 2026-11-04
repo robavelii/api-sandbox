@@ -40,7 +40,7 @@ services:
 
   api:
     <<: *app
-    command: ["node", "dist/apps/api/src/main.js"]
+    command: ["node", "apps/api/dist/apps/api/src/main.js"]
     environment:
       DATABASE_URL: postgresql://spectwin:${POSTGRES_PASSWORD:?}@postgres:5432/spectwin
       HOST: 0.0.0.0
@@ -64,7 +64,7 @@ services:
 
   worker:
     <<: *app
-    command: ["node", "dist/apps/worker/src/main.js"]
+    command: ["node", "apps/worker/dist/apps/worker/src/main.js"]
     mem_limit: 384m
     cpus: 0.5
 
