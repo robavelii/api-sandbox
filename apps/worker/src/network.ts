@@ -113,40 +113,80 @@ export type Sender = (
   headers: Record<string, string>,
 ) => Promise<HttpResult>;
 
-export const pinnedHttpsSender: Sender = (url, resolved, body, headers) =>
-  new Promise((resolve, reject) => {
-    const request = https.request(
-      url,
-      {
-        method: "POST",
-        headers: { ...headers, "content-length": Buffer.byteLength(body) },
-        timeout: 10_000,
-        servername: url.hostname,
-        lookup: (_hostname, _options, callback) =>
-          callback(null, resolved.address, resolved.family),
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          if (size < 4096) chunks.push(chunk.subarray(0, 4096 - size));
-          size += chunk.length;
-        });
-        response.on("end", () =>
-          resolve({
-            status: response.statusCode || 0,
-            body: Buffer.concat(chunks).toString("utf8"),
-            location: response.headers.location,
-          }),
-        );
-      },
-    );
-    request.on("timeout", () =>
-      request.destroy(new Error("Webhook timed out.")),
-    );
-    request.on("error", reject);
-    request.end(body);
-  });
+export function createPinnedHttpsSender(
+  requestFactory: typeof https.request = https.request,
+  deadlineMs = 10_000,
+  responseLimit = 65_536,
+): Sender {
+  return (url, resolved, body, headers) =>
+    new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout>;
+      let responseStream: import("node:http").IncomingMessage | undefined;
+      let settled = false;
+      const finish = (error?: Error, result?: HttpResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(result!);
+      };
+      const request = requestFactory(
+        url,
+        {
+          method: "POST",
+          headers: { ...headers, "content-length": Buffer.byteLength(body) },
+          timeout: deadlineMs,
+          servername: url.hostname,
+          lookup: (_hostname, _options, callback) =>
+            callback(null, resolved.address, resolved.family),
+        },
+        (response) => {
+          responseStream = response;
+          const chunks: Buffer[] = [];
+          let size = 0;
+          response.on("error", (error) => finish(error));
+          response.on("aborted", () =>
+            finish(new Error("Webhook response aborted.")),
+          );
+          response.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > responseLimit) {
+              const error = new Error("Webhook response exceeds byte limit.");
+              finish(error);
+              response.destroy();
+              request.destroy(error);
+              return;
+            }
+            const stored = chunks.reduce(
+              (total, value) => total + value.length,
+              0,
+            );
+            if (stored < 4096) chunks.push(chunk.subarray(0, 4096 - stored));
+          });
+          response.on("end", () =>
+            finish(undefined, {
+              status: response.statusCode || 0,
+              body: Buffer.concat(chunks).toString("utf8"),
+              location: response.headers.location,
+            }),
+          );
+        },
+      );
+      timer = setTimeout(() => {
+        const error = new Error("Webhook exceeded absolute deadline.");
+        finish(error);
+        responseStream?.destroy();
+        request.destroy(error);
+      }, deadlineMs);
+      request.on("timeout", () =>
+        request.destroy(new Error("Webhook timed out.")),
+      );
+      request.on("error", (error) => finish(error));
+      request.end(body);
+    });
+}
+
+export const pinnedHttpsSender = createPinnedHttpsSender();
 
 export async function safePost(
   input: string,

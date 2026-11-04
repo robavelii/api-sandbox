@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { Pool } from "pg";
 import { createApp } from "../../apps/api/src/main.js";
+import { applyMigrations } from "../../scripts/migrate.js";
 
 type InjectResult = { status: number; data: any; cookie: string };
 type Measurement = { operation: string; durationMs: number; status: number };
@@ -115,8 +116,7 @@ try {
     application_name: applicationName,
     max: profile.concurrency + 4,
   });
-  await workload.query(await readFile("migrations/001_foundation.sql", "utf8"));
-  await workload.query(await readFile("migrations/002_scenarios.sql", "utf8"));
+  await applyMigrations(workload);
   app = await createApp(workload);
   const server = app.getHttpAdapter().getInstance();
 
@@ -457,6 +457,14 @@ try {
     [owner.data.organization_id],
   );
   const quotaSuccesses = 20;
+  const logsBeforeQuota = Number(
+    (
+      await workload.query(
+        "SELECT count(*) FROM request_logs l JOIN simulation_sessions s ON s.id=l.session_id WHERE s.sandbox_id=$1",
+        [created.data.id],
+      )
+    ).rows[0].count,
+  );
   await workload.query(
     "UPDATE organizations SET request_limit=$1 WHERE id=$2",
     [
@@ -485,6 +493,26 @@ try {
   assert.equal(
     quotaBoundary.filter((response) => response.status === 429).length,
     10,
+  );
+  assert.equal(
+    (
+      await workload.query(
+        "SELECT requests FROM monthly_usage WHERE organization_id=$1",
+        [owner.data.organization_id],
+      )
+    ).rows[0].requests,
+    currentUsage.rows[0].requests + quotaSuccesses,
+  );
+  assert.equal(
+    Number(
+      (
+        await workload.query(
+          "SELECT count(*) FROM request_logs l JOIN simulation_sessions s ON s.id=l.session_id WHERE s.sandbox_id=$1",
+          [created.data.id],
+        )
+      ).rows[0].count,
+    ),
+    logsBeforeQuota + quotaSuccesses,
   );
 
   const durationMs = performance.now() - startedAt;
