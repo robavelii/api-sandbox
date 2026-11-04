@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import ScenarioEditor from "./scenario-editor";
+import PasswordRecovery from "./password-recovery";
 import AccountSecurity from "./account-security";
 import WorkspacePicker from "./workspace-picker";
 import WorkspaceMembers from "./workspace-members";
@@ -171,6 +172,7 @@ export default function Home() {
               : "Create an account"}
           </button>
         </form>
+        <PasswordRecovery />
       </div>
     );
   return (

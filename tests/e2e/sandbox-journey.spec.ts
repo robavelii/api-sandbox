@@ -6,6 +6,15 @@ test("a team can configure and replay an isolated integration journey", async ({
   browser,
 }) => {
   await page.goto("/");
+  await page.getByText("Forgot password?", { exact: true }).click();
+  await page.getByLabel("Recovery email").fill("missing@example.com");
+  await page
+    .getByRole("button", { name: "Send recovery code", exact: true })
+    .click();
+  await expect(
+    page.locator("#password-recovery").getByRole("status"),
+  ).toContainText("If this email belongs to a verified account");
+  await page.getByText("Forgot password?", { exact: true }).click();
   await page.getByRole("button", { name: "Create an account" }).click();
   await page.getByLabel("Email").fill("journey@example.com");
   await page.getByLabel("Password").fill("integration-password");

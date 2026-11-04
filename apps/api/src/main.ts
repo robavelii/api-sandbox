@@ -27,6 +27,11 @@ import {
 } from "../../../packages/engine/src/proposals.js";
 import { openAIProposalProvider } from "./proposal-provider.js";
 import { verificationMailer } from "./verification-mail.js";
+import {
+  registerRecovery,
+  recoveryMailer,
+  type RecoverySender,
+} from "./recovery.js";
 import { hashPassword, verifyPassword, token, digest } from "./auth.js";
 import { encryptSecret } from "../../../packages/engine/src/webhook-crypto.js";
 import {
@@ -55,6 +60,7 @@ export async function createApp(
     webhookEncryptionKey?: string;
     proposalProvider?: ProposalProvider;
     sendVerification?: (email: string, code: string) => Promise<void>;
+    sendRecovery?: RecoverySender;
   } = {},
 ) {
   const proposalProvider = options.proposalProvider || openAIProposalProvider();
@@ -165,6 +171,13 @@ export async function createApp(
     if (rows[0].attempts > 30)
       throw new Problem(429, "Too many attempts. Try again later.");
   }
+  registerRecovery(
+    f,
+    pool,
+    tx,
+    authLimit,
+    options.sendRecovery || recoveryMailer(),
+  );
   f.post("/api/auth/register", async (req: any, reply: any) => {
     await authLimit(req);
     const email = required(req.body?.email).trim().toLowerCase(),
@@ -257,6 +270,9 @@ export async function createApp(
         user.id,
       ]);
       await client.query("DELETE FROM auth_sessions WHERE user_id=$1", [
+        user.id,
+      ]);
+      await client.query("DELETE FROM password_recoveries WHERE user_id=$1", [
         user.id,
       ]);
       await sessionCookie(reply, user.id, client);
