@@ -30,6 +30,9 @@ test(
     await pool.query(
       await readFile("migrations/006_workspace_invitations.sql", "utf8"),
     );
+    await pool.query(
+      await readFile("migrations/007_account_recovery.sql", "utf8"),
+    );
     let verificationCode = "";
     const encryptionKey = Buffer.alloc(32, 7).toString("base64");
     const publicResolver = async () => [{ address: "8.8.8.8", family: 4 }];
